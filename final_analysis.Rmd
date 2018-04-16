@@ -1,0 +1,1022 @@
+---
+title: "Final_Analysis"
+author: "Bart_DiFiore"
+date: "December 5, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, include = F)
+```
+
+```{r cleanworkspace, include=FALSE}
+
+rm(list = ls()) 
+
+setwd("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/")
+
+```
+
+```{r libraries, include=FALSE}
+
+library(lme4)
+library(lmerTest)
+library(pbkrtest)
+library(car)
+library(pscl)
+library(MuMIn)
+library(nlme)
+library(MASS)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(glmmTMB)
+library(fields)
+library(cowplot)
+library(beyonce)
+library(ggExtra)
+
+source("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R_Files/predictzeroinfl.R")
+source("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R_Files/Functions.R")
+
+```
+
+```{r getdata}
+
+GM <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/MasterFiles/GrazingMaster.txt", header=TRUE, sep = "\t")
+head(GM) #Display the first 6 rows. 
+
+
+#Basic analysis!!!! Add in columns that estimate the change in area of each blade.  
+
+GM$Difference <- GM$AreaBefore - GM$AreaAfter # Calculate the difference in area before and after.  
+
+GM$PercentChange <- (GM$AreaBefore-GM$AreaAfter) / (GM$AreaBefore) #Calculate the percent change in area. 
+
+Bite <- GM$BiteYN.Corrected == "Y" # Create a new objec that is an array testing if Bite...ed is equal to "Y" 
+
+GM$PC.NoZ <- ifelse(Bite == TRUE, yes = GM$PercentChange, no = 0) # Create another variable that forces the percent change to zero for all unbitten seagrass blades.
+
+GM$diff.noz <- ifelse(Bite == TRUE, yes = GM$Difference, no = 0)
+
+GM$diff.noz <- ifelse(GM$diff.noz < 0, yes = 0, no = GM$diff.noz)
+
+#Taking the average of the pairs isn't the best approach. Liza recommended using the total area of BOTH clips and taking the ratio before and after. Lets try this.
+
+d <- GM 
+
+d$clipAB.cor <- ifelse(d$Clip.AB == "a" | d$Clip.AB == "A", "A", "B")
+
+dA <- subset(d, subset = d$clipAB.cor == "A")
+dB <- subset(d, subset = d$clipAB.cor == "B")
+
+dA$aacor <- ifelse(dA$BiteYN.Corrected == "N", dA$AreaBefore, dA$AreaAfter)
+dB$aacor <- ifelse(dB$BiteYN.Corrected == "N", dB$AreaBefore, dB$AreaAfter)
+
+names(dA) <- c("Record.Num", "Patch.CT", "Patch.Num", "UniquePatch.num" , "TransectColor", "Clip.Label", "Distance", "Clip.AB", "AreaBefore_A", "AreaAfter_A", "BiteYN", "BiteYN.Corrected_A", "Difference", "PercentChange", "PC.NoZ", "diff.noz", "clipAB.cor", "aacor_A")
+
+names(dB) <- c("Record.Num", "Patch.CT", "Patch.Num", "UniquePatch.num" , "TransectColor", "Clip.Label", "Distance", "Clip.AB", "AreaBefore_B", "AreaAfter_B", "BiteYN", "BiteYN.Corrected_B", "Difference", "PercentChange", "PC.NoZ", "diff.noz", "clipAB.cor", "aacor_B")
+
+new <- data.frame(UniquePatch.num = dA$UniquePatch.num, 
+                  TransectColor = dA$TransectColor, 
+                  Distance = dA$Distance, 
+                  AreaBefore_A = dA$AreaBefore_A, 
+                  aacor_A = dA$aacor,
+                  BiteYN.Corrected_A = dA$BiteYN.Corrected_A,
+                  AreaBefore_B = dB$AreaBefore_B, 
+                  aacor_B = dB$aacor_B, 
+                  BiteYN.Corrected_B = dB$BiteYN.Corrected_B)
+
+new$totalbefore <- new$AreaBefore_A + new$AreaBefore_B
+new$totalafter <- new$aacor_A + new$aacor_B
+
+new$difference <- new$totalbefore - new$totalafter
+new$difference.cor <- ifelse(new$difference < 0, 0, new$difference) # this line of code forces all blades with a difference less than 0 to show no grazing (0 grazing)
+new$ratio <- new$difference.cor/new$totalbefore
+
+new$transect.num <- rep(1:63, each = 11)
+
+#Add a number for each transect within each patch... 
+
+new$tnuminpatch <- rep(1:3, each = 11, times = 21)
+
+
+
+```
+
+```{r mergepatchdata, include=T}
+
+###################
+#Structure the data
+###################
+
+aw.norm.second <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/final_rawfiles/vssecond.csv", sep = ",", header=T)
+
+dat.second <- merge(new, aw.norm.second, by.x = "UniquePatch.num", by.y = "pnum.f")
+
+
+#Data for second pass of transect... 
+c.second <- dat.second[,c("UniquePatch.num","Distance","totalbefore","difference.cor","ratio","transect.num","tnuminpatch","treatment","location","sub","herbn","predn","invert","other","parrot","herbsize","predsize","invertsize","othersize","parrotsize","rug", "parea", "herb.den", "pisc.den", "invert.den", "other.den", "parrot.den", "pextent")]
+
+c.second$pnum.f <- as.factor(c.second$UniquePatch.num)
+c.second$tnuminpatch.f <- as.factor(c.second$tnuminpatch)
+c.second$transect.num.f <- as.factor(c.second$transect.num)
+
+
+############# Add in a bitten variable 
+
+c.second$bitten <- ifelse(c.second$ratio == 0, 0, 1)
+
+```
+
+```{r standarize_time}
+
+###################
+# Standardize Time
+###################
+
+c.second$ratio.time <- ifelse(c.second$sub == "Macroalgea", c.second$ratio/3, c.second$ratio)
+
+rescale <- function(x,...){ 
+  (x - min(x))/(max(x) - min(x))}
+
+test <- seq(0,0.3, length.out = 10)
+rescale(x = test) # This looks good but NA's are going to be a problem. Lets subset and get rid of the NA's and patch reefs that we don't care about. 
+
+df <- na.omit(c.second[, c("UniquePatch.num", "Distance", "ratio", "location", "sub", "herb.den", "pisc.den", "rug", "parea", "pextent", "pnum.f", "tnuminpatch.f", "transect.num.f", "bitten", "ratio.time")])
+
+df <- df[df$UniquePatch.num < 20, ]
+
+macro <- df[df$sub == "Macroalgea", ]
+macro$ratio.stan <- rescale(macro$ratio)
+
+sea <- df[df$sub == "Seagrass", ]
+sea$ratio.stan <- rescale(sea$ratio)
+
+df <- rbind(sea, macro)
+df$ratio.stancor <- ifelse(df$ratio.stan == 1, 0.9999999, df$ratio.stan)
+
+```
+
+```{r summary_stats}
+
+mean.all <- c(mean(df$ratio.stancor), sd(df$ratio.stancor))
+prob.all <- length(df$bitten[df$bitten == 1]) / length(df$bitten)
+
+fl.mean <- c(mean(df$ratio.stancor[df$location == "Florida"]), sd(df$ratio.stancor[df$location == "Florida"]))
+
+bz.mean <- c(mean(df$ratio.stancor[df$location == "Belize"]), sd(df$ratio.stancor[df$location == "Belize"]))
+
+
+```
+
+
+```{r pca}
+
+temp.pca <- scale(aw.norm.second[,c("herb.den", "parea")])[1:13,]
+
+pca1 <- princomp(temp.pca)
+
+mergefile <- data.frame(pnum.f = aw.norm.second$pnum.f[1:13], comp1 = pca1$scores[,1])
+
+df <- merge(df, mergefile, by = "pnum.f")
+  
+```
+
+```{r model_beta}
+
+beta.rich <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(pisc.den) * scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = list(family="beta",link="logit"))
+summary(beta.rich)
+modelassump(beta.rich)
+
+beta1 <- glmmTMB(ratio.stancor ~ scale(Distance) * (scale(pisc.den) + scale(comp1)) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = list(family="beta",link="logit"))
+summary(beta1)
+
+beta2 <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(comp1) + scale(pisc.den) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = list(family="beta",link="logit"))
+summary(beta2)
+
+beta.test <- glmmTMB(ratio.stancor ~ scale(Distance) * comp1 + scale(pisc.den) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = list(family="beta",link="logit"))
+summary(beta.test)
+
+beta2.test <- glmmTMB(ratio.stancor ~ scale(Distance) * (scale(pisc.den) + scale(comp1)) + scale(pisc.den) * scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = list(family="beta",link="logit"))
+summary(beta2.test)
+
+  #Check assumptions graphically
+    modelassump((beta2))
+    plot(residuals(beta2) ~ df$Distance[df$ratio.stancor > 0])
+    plot(residuals(beta2) ~ jitter(df$comp1[df$ratio.stancor > 0]))
+    plot(residuals(beta2) ~ jitter(df$pisc.den[df$ratio.stancor > 0]))
+    
+AIC(beta.rich, beta1, beta2)
+    
+```
+
+```{r model_binomial}
+
+bino.rich <-  glmmTMB(bitten ~ scale(Distance) * scale(pisc.den) * scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino.rich)
+modelassump((bino.rich))
+
+bino1 <-  glmmTMB(bitten ~ scale(Distance) * (scale(pisc.den) + scale(comp1)) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino1)
+modelassump((bino1))
+
+bino1.0 <-  glmmTMB(bitten ~ scale(Distance) * scale(comp1) + scale(pisc.den) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino1.0)
+modelassump((bino1.0))
+
+bino1.test <-  glmmTMB(bitten ~ scale(Distance) * (comp1 + scale(pisc.den)) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino1.test)
+modelassump((bino1.test))
+
+bino2 <-  glmmTMB(bitten ~ scale(Distance) * (scale(pisc.den) + scale(comp1)) + scale(pisc.den)*scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino2)
+modelassump((bino1))
+
+
+anova(bino1,bino1.0)
+
+```
+
+```{r grazing_halo_relationship}
+
+## Is in situ grazing correlated with halo extent
+
+mean.graze <- aggregate(df$ratio.stancor, by = list(df$pnum.f), FUN = mean, na.rm =T)
+
+names(mean.graze) <- c("pnum.f", "mean.graze")
+
+mean.graze$hextent <- aw.norm.second$pextent[1:13]
+
+cor.test(mean.graze$mean.graze, mean.graze$hextent)
+plot(mean.graze[,2:3])
+
+(h.g1 <- lm(pextent ~ Distance * ratio.stancor, data = df))
+summary(h.g1)
+
+bitten.f <- as.factor(df$bitten)
+
+h.g2 <- lm(pextent ~ Distance * bitten, data = df)
+summary(h.g2)
+
+temp <- predict(h.g2)
+
+h.g3 <- glmer(bitten ~ scale(Distance) * scale(pextent) + (1|pnum.f), data = df, family = binomial)
+summary(h.g3)
+
+h.g4 <- lmer(ratio.stancor ~ scale(Distance) * scale(pextent) + (1|pnum.f), data = df[df$ratio.stancor > 0, ])
+summary(h.g4)
+
+
+
+h.g3 <- lmer(pextent ~ Distance + log(ratio.stancor) + (1|pnum.f), data =df[df$ratio.stancor > 0, ])
+
+h.g4 <- glmer(pextent ~ Distance * bitten, data = df)
+summary(h.g2)
+
+```
+
+
+```{r figure2}
+
+##########################
+## Plot the Comp1 Effects
+##########################
+
+#Create new data.frame to predict on
+newdat1 <- expand.grid(Distance = seq(0,20,length.out = 100), comp1 = seq(min(df$comp1), max(df$comp1), length.out = 100))
+newdat1$pisc.den <- mean(df$pisc.den) # hold pisc.den at its global mean
+
+mm1 <- model.matrix(delete.response(terms(beta2)),newdat1) #create a new model matrix
+newdat1$predict.beta2 <- plogis(drop(mm1 %*% fixef(beta2)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+
+mm2 <- model.matrix(delete.response(terms(bino1)),newdat1)
+newdat1$predict.bino1 <- plogis(drop(mm2 %*% fixef(bino1)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+
+newdat1$pred.unconditional <- newdat1$predict.beta2 * newdat1$predict.bino1
+
+##### Plot comp1 fixed effects heat map 
+
+# Some stuff for plotting
+
+# Jitter on Distance for Plotting Purposes
+df$jitter.dist <- jitter(as.numeric(ifelse(df$Distance == 0, 0.5,
+                                    ifelse(df$Distance == 20, 19.5, 
+                                           ifelse(df$Distance < 20 & df$Distance > 0, df$Distance, "")))))
+#forgg1 <- subset(df, df$ratio > 0) # get rid of the zeros to make plotting easier
+df$bitten.f <- ifelse(df$bitten == 0, "Not Bitten", "Bitten")
+df$bitten.col <- ifelse(df$bitten == 0, "black", NA)
+
+redtoblue <- colorRampPalette(rev(c("#b2182b", "#d6604d", "#f4a582", "#fddbc7", "#f7f7f7","#d1e5f0", "#92c5de","#4393c3","#2166ac")))
+
+redtoblue2 <- colorRampPalette(rev(c('#d73027','#f46d43','#fdae61','#fee090','#ffffbf','#e0f3f8','#abd9e9','#74add1','#4575b4')))
+
+#plot.comp1 <- 
+  
+plot.comp <- ggplot(newdat1, aes(x = Distance, y = comp1))+
+  geom_raster(aes(fill = pred.unconditional))+
+  scale_fill_gradientn(colors = redtoblue2(20), limits = c(0,max(newdat1$pred.unconditional)), guide = guide_colorbar(barheight = 15))+
+  scale_x_continuous(breaks = seq(0,20, by = 4)) +
+  geom_contour(aes(z = pred.unconditional), color = "white")+
+  geom_point(data = df[df$ratio.stancor > 0, ], aes(x = jitter.dist, y = comp1, size = ratio.stancor), pch = 21, col = "gray80", bg = adjustcolor("black",alpha.f=0.6))+
+  scale_size(range = c(2,6), breaks = seq(0, 1, by = 0.2), guide = guide_legend(title = expression("Observed \nProportion \nGrazed"), order = 1))+
+  geom_point(data = df[df$ratio.stancor == 0, ], aes(x = jitter.dist, y = comp1), pch = 21, col = "gray80")+
+  labs(x = "Distance from Reef (m)", y = expression("PCA1: Variance of Herbivore Density (#/"~m^{2}~") and Patch Area ("~m^{2}~")"), fill = expression(paste("Predicted \nGrazing"))) +
+  theme(legend.spacing = unit(1, "cm"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+#############################
+## Plot the Pisc.den Effects
+#############################
+
+newdat2 <- expand.grid(Distance = seq(0,20,length.out = 100), pisc.den = seq(min(df$pisc.den), max(df$pisc.den), length.out = 100))
+newdat2$comp1 <- mean(df$comp1) #Hold comp1 at its mean
+
+
+mm3 <- model.matrix(delete.response(terms(beta2)),newdat2)
+newdat2$predict.beta2 <- plogis(drop(mm3 %*% fixef(beta2)[[1]]))
+
+mm4 <- model.matrix(delete.response(terms(bino1)),newdat2)
+newdat2$predict.bino1 <- plogis(drop(mm4 %*% fixef(bino1)[[1]]))
+
+newdat2$pred.unconditional <- newdat2$predict.beta2 * newdat2$predict.bino1
+
+##### Plot pisc fixed effects heat map
+plot.pisc <- ggplot(newdat2, aes(x = Distance, y = pisc.den))+
+  geom_raster(aes(fill = pred.unconditional))+
+  scale_fill_gradientn(colors = redtoblue2(20))+
+  scale_x_continuous(breaks = seq(0,20, by = 4)) +
+  geom_contour(aes(z = pred.unconditional), color = "white")+
+  geom_point(data = df[df$ratio.stancor > 0, ], aes(x = jitter.dist, y = pisc.den, size = ratio.stancor), pch = 21, col = "gray80", bg = adjustcolor("black",alpha.f=0.6))+
+  scale_size(range = c(2,6), breaks = seq(0, 1, by = 0.2), guide = guide_legend(title = expression("Observed \nProportion \nGrazed"), order = 1))+
+  geom_point(data = df[df$ratio.stancor == 0, ], aes(x = jitter.dist, y = pisc.den), pch = 21, col = "gray80")+
+  labs(x = "Distance (m)", y = expression("Piscivore Density (#/"~m^{2}~")") , fill = expression(paste("Predicted \nGrazing"))) +
+  theme(legend.spacing = unit(1, "cm"))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+## Combine into one 
+
+fig.2 <- plot_grid(plot.pisc + labs(x=""), plot.comp + labs(y = "PCA1"), ncol = 1, nrow = 2, align = "v")
+fig.2
+
+# pdf("Figures/Draft_finalfigures/Fig2.pdf", width = 6, height = 12)
+# fig.2
+# dev.off()
+
+# jpeg("Figures/Draft_finalfigures/Fig2_redue.jpg", width = 7, height = 12, units = 'in', res = 300)
+# fig.2
+# dev.off()
+
+##########################
+## Figure 2 summary stats
+##########################
+
+large <- newdat1$pred.unconditional[newdat1$Distance == 0 & newdat1$comp1 == max(newdat1$comp1)] - newdat1$pred.unconditional[newdat1$Distance == 20 & newdat1$comp1 == max(newdat1$comp1)] / newdat1$pred.unconditional[newdat1$Distance == 0 & newdat1$comp1 == max(newdat1$comp1)]
+
+small <- newdat1$pred.unconditional[newdat1$Distance == 0 & newdat1$comp1 == min(newdat1$comp1)] - newdat1$pred.unconditional[newdat1$Distance == 20 & newdat1$comp1 == min(newdat1$comp1)] / newdat1$pred.unconditional[newdat1$Distance == 0 & newdat1$comp1 == min(newdat1$comp1)]
+
+
+```
+
+```{r supplementalfig.X_confidenceintervals}
+
+####################################
+## Plots w/ confidence intervals
+####################################
+
+################ For Pisc.den
+newdat3 <- expand.grid(pisc.den = seq(min(df$pisc.den), max(df$pisc.den), length.out = 1000))
+newdat3$comp1 <- mean(df$comp1)
+newdat3$Distance <- mean(df$Distance)
+
+## design matrix (fixed effects)
+mm5 <- model.matrix(delete.response(terms(beta2)),newdat3)
+mm6 <- model.matrix(delete.response(terms(bino1)), newdat3)
+
+newdat3$predict.beta2 <- plogis(drop(mm5 %*% fixef(beta2)[[1]]))
+             # predvar <- diag(mm5 %*% vcov(beta2)[[1]] %*% t(mm5))
+             # newdat3$SE.beta2 <- sqrt(predvar)
+newdat3$predict.bino1 <- plogis(drop(mm6 %*% fixef(bino1)[[1]]))
+newdat3$pred.unconditional <- newdat3$predict.beta2 * newdat3$predict.bino1
+
+set.seed(101)
+pred.betapar.psim <- mvrnorm(1000,mu = fixef(beta2)[[1]], Sigma = vcov(beta2)[[1]])
+pred.beta.psim <- mm5 %*% t(pred.betapar.psim)
+pred.binopar.psim <- mvrnorm(1000,mu=fixef(bino1)[[1]],Sigma=vcov(bino1)[[1]]) 
+pred.bino.psim <- mm6 %*% t(pred.binopar.psim)
+pred.ucount.psim <- plogis(pred.beta.psim)*plogis(pred.bino.psim) 
+ci.ucount <- t(apply(pred.ucount.psim,1,quantile,c(0.025,0.975))) 
+ci.ucount <- data.frame(ci.ucount)
+names(ci.ucount) = c("ucount.low","ucount.high")
+newdat3$se.low <- ci.ucount$ucount.low
+newdat3$se.high <- ci.ucount$ucount.high
+
+  #For results first line summary...
+      fr <- data.frame(pisc.den = c(0.01, 0.02), comp1 = mean(df$comp1), Distance = mean(df$Distance))
+      mm.fr.beta <- model.matrix(delete.response(terms(beta2)), fr)
+      mm.fr.bino <- model.matrix(delete.response(terms(bino1)), fr)
+      fr$predicted <- plogis(drop(mm.fr.beta %*% fixef(beta2)[[1]])) * plogis(drop(mm.fr.bino %*% fixef(bino1)[[1]]))
+      sumforoutput <- (fr$predicted[1] - fr$predicted[2]) / fr$predicted[1]
+
+p1 <- ggplot(df, aes(x=pisc.den, y = ratio.stancor))+
+  geom_point(aes(x=jitter(pisc.den)), shape = 21, color = "black")+
+  geom_line(data = newdat3, aes(x = pisc.den, y = pred.unconditional))+
+  geom_line(data=newdat3, aes(x = pisc.den, y = se.low), lty = 4, color = "grey50")+
+  geom_line(data=newdat3, aes(x = pisc.den, y = se.high),lty = 4, color = "grey50")+
+  labs(x = expression("Piscivore density (#/"~m^{2}~")"), y = "Proportion grazed")+
+  theme_bw()
+
+################ For Comp1 
+
+newdat4 <- expand.grid(comp1 = seq(min(df$comp1), max(df$comp1), length.out = 1000))
+newdat4$pisc.den <- mean(df$pisc.den)
+newdat4$Distance <- mean(df$Distance)
+
+## design matrix (fixed effects)
+mm7 <- model.matrix(delete.response(terms(beta2)),newdat4)
+mm8 <- model.matrix(delete.response(terms(bino1)), newdat4)
+
+newdat4$predict.beta2 <- plogis(drop(mm7 %*% fixef(beta2)[[1]]))
+             # predvar <- diag(mm7 %*% vcov(beta2)[[1]] %*% t(mm7))
+             # newdat4$SE.beta2 <- sqrt(predvar)
+newdat4$predict.bino1 <- plogis(drop(mm8 %*% fixef(bino1)[[1]]))
+newdat4$pred.unconditional <- newdat4$predict.beta2 * newdat4$predict.bino1
+
+set.seed(101)
+pred.betapar.psim <- mvrnorm(1000,mu = fixef(beta2)[[1]], Sigma = vcov(beta2)[[1]])
+pred.beta.psim <- mm7 %*% t(pred.betapar.psim)
+pred.binopar.psim <- mvrnorm(1000,mu=fixef(bino1)[[1]],Sigma=vcov(bino1)[[1]]) 
+pred.bino.psim <- mm8 %*% t(pred.binopar.psim)
+pred.ucount.psim <- plogis(pred.beta.psim)*plogis(pred.bino.psim) 
+ci.ucount <- t(apply(pred.ucount.psim,1,quantile,c(0.025,0.975))) 
+ci.ucount <- data.frame(ci.ucount)
+names(ci.ucount) = c("ucount.low","ucount.high")
+newdat4$se.low <- ci.ucount$ucount.low
+newdat4$se.high <- ci.ucount$ucount.high
+
+
+p2 <- ggplot(df, aes(x=comp1, y = ratio.stancor))+
+  geom_point(aes(x=jitter(comp1)), shape = 21, color = "black")+
+  geom_line(data = newdat4, aes(x = comp1, y = pred.unconditional))+
+  geom_line(data=newdat4, aes(x = comp1, y = se.low), lty = 4, color = "grey50")+
+  geom_line(data=newdat4, aes(x = comp1, y = se.high),lty = 4, color = "grey50")+
+  labs(x = expression("PCA1: Variance of Herbivore Density (#/"~m^{2}~") and Patch Area ("~m^{2}~")"), y = "Proportion grazed")+
+  theme_bw()
+
+p2.a <- p2+labs(y="")
+plot_grid(p1,p2.a,align = "h", labels = "AUTO")
+
+# pdf("Figures/Draft_finalfigures/FigsSX.pdf", width = 10, height = 6)
+# plot_grid(p1,p2.a,align = "h", labels = "AUTO")
+# dev.off()
+
+
+```
+
+```{r supplementalfig.X_effectsizes}
+
+model1Frame <- data.frame(Variable = rownames(summary(beta2)$coefficients$cond),
+                          Coefficient = summary(beta2)$coefficients$cond[, 1],
+                          SE = summary(beta2)$coefficients$cond[, 2],
+                          Model = "Beta (logit-link)", 
+                          pvalue = summary(beta2)$coefficients$cond[, 4])
+model2Frame <- data.frame(Variable = rownames(summary(bino1)$coefficients$cond),
+                          Coefficient = summary(bino1)$coefficients$cond[, 1],
+                          SE = summary(bino1)$coefficients$cond[, 2],
+                          pvalue = summary(bino1)$coefficients$cond[, 4],
+                          Model = "Binomial (logit-link)")
+
+# Combine these data.frames
+allModelFrame <- data.frame(rbind(model1Frame, model2Frame))  # etc.
+row.names(allModelFrame) <- NULL
+allModelFrame$sig <- ifelse(allModelFrame$pvalue < 0.05, "black", "white")
+
+
+allModelFrame$vnames <- c("intercept", "Distance", "PCA1", "Piscivore Density", "Distance x PCA1", "intercept", "Distance", "Piscivore Density", "PCA1", "Distance x Piscivore Density", "Distance x PCA1")
+
+modeframe.forgg <- allModelFrame[allModelFrame$vnames != "intercept", ]
+
+# Plot
+zp1 <- ggplot(modeframe.forgg, aes(colour = Model))+
+  geom_hline(yintercept = 0, colour = gray(1/2), lty = 2)+
+  geom_linerange(aes(x = vnames, ymin = Coefficient - SE, ymax = Coefficient + SE), lwd = 1, position = position_dodge(width = 1/2))+
+  geom_pointrange(aes(x = vnames, y = Coefficient, ymin = Coefficient - SE, ymax = Coefficient + SE, fill = sig),lwd = 1/2, position = position_dodge(width = 1/2),shape = 21)+
+  scale_fill_manual(values = c("black","white"), guide = guide_legend(title = "Significant at \np < 0.05"))+
+  coord_flip() + 
+  theme_bw()+
+  theme(axis.title.y = element_blank())
+print(zp1)  # The trick to these is position_dodge().
+
+# pdf("Figures/Draft_finalfigures/FigsS4.pdf", width = 6, height = 4)
+# zp1
+# dev.off()
+
+
+```
+
+```{r landscape_analysis}
+
+###########################################################
+### Summary Stats for the Halo Analysis
+###########################################################
+setwd("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/halo_analysis")
+nnd <- read.table("/Users/bartdifiore/Desktop/LVM_share/nnd.csv", header = T, sep = ",")
+ls <- read.table("geometries.csv", header = T, sep = ",")
+
+means <- aggregate(nnd$Distance, by = list(InputID = nnd$InputID), FUN = mean)
+names(means)[2] <- "Means"
+
+sd <- aggregate(nnd$Distance, by = list(InputID = nnd$InputID), FUN = sd)
+names(sd)[2] <- "SD"
+
+summary <- cbind(means, sd[2])
+#hist(summary$Means, breaks = 30, xlab = "Halo Extent (m)", main = "")
+
+################
+#Bring in the other geometries nnda
+
+ls <- ls[!duplicated(ls$ID), ]
+
+ls <- merge(ls,means, by.x = "ID", by.y = "InputID")
+
+names(ls) <- c("ID", "Name", "band", "patch.area", "patch.perimeter", "halo.area", "halo.perimeter", "total.area", "meanz", "minz", "maxz", "medianz", "countz", "dist_to_34m", "dist_to_land", "overlap_area", "number_intersecting_patches", "halo.extent")
+
+################
+# For text 
+
+lm.depth <- lm(halo.extent ~ meanz, data = ls)
+summary(lm.depth)
+
+lm.distance <- lm(halo.extent ~ dist_to_land, data = ls)
+
+total.area <- sum(ls$halo.area)/10^6
+
+
+#####################
+### MPA Analysis 
+#####################
+
+mpa <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/halo_analysis/FloridaData/mpa_patches.csv", header=T, sep=",")
+
+ls$mpa <- ls$ID %in% mpa$ID
+
+lm.mpa <- lm(halo.extent ~ log(patch.area)*mpa, data = ls)
+summary(lm.mpa)
+modelassump(lm.mpa)
+
+ggplot(ls, aes(x = log(patch.area), y = halo.extent, group = mpa))+
+  geom_point(aes(color= mpa), shape = 1)+
+  geom_smooth(method = lm)
+
+##########################################################
+## How much of all seagrass? 
+##########################################################
+
+# uf_patches <- readOGR("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/halo_analysis/FloridaData/ufrm_patches_utm.shp")
+# 
+# uf_patches@data$sh_length_num <- as.numeric(levels(uf_patches@data$sh_length))[uf_patches@data$sh_length]
+# 
+# uf_seagrass <- readOGR("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/halo_analysis/FloridaData/ufrm_seagrass_utm.shp")
+# 
+# uf_seaward <- readOGR("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/halo_analysis/FloridaData/seaward_line.shp")
+# 
+# uf_seagrass@data$sh_area_num <- as.numeric(levels(uf_seagrass@data$sh_area))[uf_seagrass@data$sh_area]
+# 
+# gl.mean <- mean(ls$halo.extent)
+# 
+# gl.area <- (sum(uf_patches@data$sh_length_num) * gl.mean)/10^6
+# 
+# gl.area_seagrass <- sum(uf_seagrass@data$sh_area_num)/10^6
+
+##########################################################
+## Belize Landscape Analysis
+##########################################################
+
+bzdist <- read.table("/Volumes/BARTZIP/BZ_spatialanalysis/Jeff_analysis/out_distance.csv", sep = ",", header=T)
+
+bzgeom <- read.table("/Volumes/BARTZIP/BZ_spatialanalysis/Jeff_analysis/geometries.csv", sep = ",", header=T)
+
+dist <- aggregate(bzdist$Distance, by = list(bzdist$InputID), FUN = mean)
+names(dist) <- c("id", "extent")
+
+bzgeom <- merge(bzgeom, dist)
+
+###########################################################
+## All Patches
+###########################################################
+
+all <- ls[, c("ID", "patch.area", "patch.perimeter", "halo.extent")]
+all$location <- "Florida"
+names(all) <- c("id", "area", "perimeter", "extent", "location")
+
+bzgeom$id.new <- paste("bz", bzgeom$id, sep = "_")
+forall <- bzgeom[, c(6, 3:5)]
+forall$location <- "Belize"
+names(forall) <- c("id", "area", "perimeter", "extent", "location")
+all <- rbind(all, forall)
+
+# plot(extent ~ area, data = all)
+# lm.all <- lm(extent ~ area, data = all)
+# 
+# plot(log(extent) ~ log(area), data = all)
+# lm.all2 <- lm(log(extent) ~ log(area), data = all)
+
+#########################################################################
+## Bring in Field Site data 
+#########################################################################
+halo <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/haloestimates.csv", sep = ",", header = T)
+
+forplot <- aggregate(halo$extent, by = list(halo$parea, halo$location, halo$pnum), FUN = mean)
+names(forplot) <- c("area", "location", "pnum", "extent")
+
+forplot$id <- paste("field", forplot$pnum, sep = "_")
+forplot$perimeter <- NA
+
+all <- rbind(all, forplot[,c(5,1,6,4,2)])
+
+
+```
+
+```{r figure1_landscapehisto}
+
+hist(summary$Means, breaks = 30, xlab = "Halo Extent (m)", main = "", cex.axis = 1.7, cex.lab = 1.7, col = "gray50")
+
+hist(all$extent[all$location == "Florida"], breaks = 30, xlab = "Halo Extent (m)", main = "", cex.axis = 1.7, col = "gray50")
+hist(all$extent[all$location == "Belize"], add = T)
+
+all$forgg <- ifelse(all$location == "Belize", "b", "a")
+
+hist1 <- ggplot(data = all, aes(x = extent,  fill = forgg))+
+  geom_histogram(binwidth = 2, position = "identity", center = 3)+
+  scale_fill_manual(values = c("gray70", "gray50"), labels = c("Florida", "Belize"), name = "")+
+  labs(x = "Halo width (m)", y = "Frequency")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"), panel.border = element_blank())+
+  theme(text = element_text(size = 20))+
+  theme(legend.justification=c(0,1), legend.position=c(0.8,0.4))
+  
+
+ggplot(data = all, aes(x = extent,  fill = forgg))+
+  geom_density(alpha = 0.6)+
+  scale_fill_manual(values = c("gray70", "gray50"))+
+  theme_minimal()
+
+
+# jpeg("Figures/Draft_finalfigures/histo.jpg", width = 900, height = 400)
+# d <- par(mar = c(5,5,1,1))
+# hist(summary$Means, breaks = 30, xlab = "Halo Extent (m)", main = "", cex.axis = 1.9, cex.lab = 1.9, col = "gray50")
+# par(d)
+# dev.off()
+# png("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/histo_redue.png", width = 410, height = 362)
+# hist1
+# dev.off()
+
+
+
+```
+
+```{r supplementalfix.X_lanscapegeometries}
+
+lm1 <- lm(log10(halo.extent) ~ log10(patch.area), data = ls)
+summary(lm1)
+
+
+lm2 <- lm(halo.extent ~ patch.area, data = ls)
+summary(lm2)
+
+lm3 <- lm(halo.extent ~ patch.perimeter, data = ls)
+summary(lm3)
+
+r2.forgg <- round(summary(lm1)$adj.r.squared, 2)
+
+##################################################
+## Drop Outliers
+##################################################
+
+dim(ls)
+length(ls$ID[ls$halo.extent < 3])
+length(ls$ID[ls$patch.area < 20])
+
+test <- ls[ls$halo.extent > 0.25, ]
+lm1 <- lm(log10(halo.extent) ~ log10(patch.area), data = test)
+summary(lm1)
+plot(log10(halo.extent) ~ log10(patch.area), data = test)
+
+sp1 <- ggplot(test, aes(x = patch.area, y = halo.extent))+
+  geom_point(shape = 1)+
+  geom_smooth(method = lm, color = "black")+
+  #scale_x_continuous(name = expression("log(Patch Area ("~m^{2}~"))"), breaks = seq(2,12, by = 2))+
+  scale_x_log10(name = expression("Patch Area ("~m^{2}~")"), breaks = c(0, 1, 10, 100, 1000, 10000))+
+  scale_y_log10(name = "Halo Width (m)", breaks = c(0, 0.5, 1, 5, 10, 20, 30, 40, 50, 75))+
+  #scale_y_continuous(name = "log(Halo Width (m)", breaks = seq(-2,6, by = 1), limits = c(-1,4.5))+
+  # annotate("text", x = 3.5, y = 4.25, label = lm_eqn(lm1), colour="black", size = 3.5, parse=TRUE)+
+  # annotate("text",x = 3.5, y = 75, label = expression(~R^{2}~"=0.46"), size = 3.5)+
+  # annotate("text",x = 3.5, y = 70, label = "p < 0.001", size = 3.5)+
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())
+
+# pdf("Figures/Draft_finalfigures/FigsS5.pdf", width = 7, height = 5)
+# sp1
+# dev.off()
+
+plot(log(halo.extent) ~ log(I(patch.perimeter/patch.area)), data = test)
+abline(lm.ratio)
+lm.ratio <- lm(log(halo.extent) ~ log(I(patch.perimeter/patch.area)), data = test)
+
+plot(halo.extent ~ I(patch.perimeter/patch.area), data = test)
+
+sp2 <- ggplot(test, aes(x = I(patch.perimeter/patch.area), y = halo.extent))+
+  geom_point(shape = 1)+
+  geom_smooth(method = lm, color = "black")+
+  scale_x_log10(name = expression("Patch Perimeter (m) / Patch Area ("~m^{2}~")"), breaks = c(0, 0.05, 0.1, 0.2, 0.5, 1, 2))+
+  scale_y_log10(name = "Halo Width (m)", breaks = c(0, 0.5, 1, 5, 10, 20, 30, 40, 50, 75))+
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())
+
+##############################################
+## Landscape stats
+##############################################
+forplot <- aggregate(halo$extent, by = list(halo$parea, halo$location, halo$pnum), FUN = mean)
+names(forplot) <- c("area", "location", "pnum", "extent")
+
+forplot$id <- paste("field", forplot$pnum, sep = "_")
+forplot$perimeter <- NA
+
+all <- rbind(all, forplot[,c(5,1,6,4,2)])
+
+hist(log(all$extent))
+
+car::outlierTest(lm.all)
+# rstudent unadjusted p-value Bonferonni p
+# 368 -4.698024         3.1233e-06    0.0023643
+  # One outlier... drop it from the analysis...
+
+all <- all[-c(368), ]
+
+lm.all <- lm(log(extent) ~ log(area)*location, data = all)
+summary(lm.all)
+modelassump(lm.all)
+  #significant interaction, i.e. slopes are different between locations. Both are significantly greater than zero.
+
+lm.all.p <- lm(log(extent) ~ log(perimeter)*location, data = all)
+summary(lm.all.p)
+modelassump(lm.all.p)
+plot(log(extent) ~ log(perimeter), data = all)
+plot(extent ~ perimeter, data = all)
+
+#############################################
+## Plot for all
+#############################################
+
+fig.all <- ggplot(all, aes(x = area, y = extent, group = location))+
+  geom_point(aes(shape = location), color = "gray70")+
+  scale_shape_manual(values=c(24,21), name = "")+
+  geom_point(data = forplot, aes(shape = location), color = "black", fill = "black")+
+  geom_smooth(method = lm, aes(color = location))+
+  scale_color_manual(values = c("black","gray50"), name = "")+
+  scale_size_manual(values = c(1, 1.5))+
+  #scale_x_continuous(name = expression("log(Patch Area ("~m^{2}~"))"), breaks = seq(2,12, by = 2))+
+  scale_x_log10(name = expression("Patch Area ("~m^{2}~")"), breaks = c(0, 1, 10, 100, 1000, 10000))+
+  scale_y_log10(name = "Halo Width (m)", breaks = c(0, 0.5, 1, 5, 10, 20, 30, 40, 50, 75))+
+  #scale_y_continuous(name = "log(Halo Width (m)", breaks = seq(-2,6, by = 1), limits = c(-1,4.5))+
+  # annotate("text", x = 3.5, y = 4.25, label = lm_eqn(lm1), colour="black", size = 3.5, parse=TRUE)+
+  # annotate("text",x = 3.5, y = 75, label = expression(~R^{2}~"=0.46"), size = 3.5)+
+  # annotate("text",x = 3.5, y = 70, label = "p < 0.001", size = 3.5)+
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())+
+  theme(legend.justification=c(0,1), legend.position=c(0.05,0.95), legend.key.width = unit(1, "inches"))+
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+
+
+
+```
+
+```{r figure3}
+
+halo <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/haloestimates.csv", sep = ",", header = T)
+
+##############################################
+## Field site stats
+##############################################
+
+lm.field <- lm(extent ~ location*comp1+pisc.den*comp1, data = halo)
+summary(lm.field)
+
+lm.field2 <- lm(extent ~ pisc.den, data = halo)
+summary(lm.field2)
+
+lm.field <- lm(extent ~ location*pisc.den*comp1, data = halo)
+summary(lm.field)
+  #no evidence of an interaction, i.e. no different in slopes between sites, also no evidence of difference in intercepts. Therefore fit a model to all data combined. 
+
+lm.more <- lm(extent ~ comp1*location, data = halo)
+summary(lm.more)
+
+lm.more2 <- lm(extent ~ comp1, data = halo)
+
+anova(lm.field, lm.more)
+anova(lm.more, lm.more2)
+
+# 
+# lm.hd <- lm(extent ~ comp1, data = halo)
+# summary(lm.hd)
+# 
+# lm.temp <- lm(extent ~ parea , data = halo)
+# lm.temp2 <- lm(herb.den ~ parea, data = halo)
+# 
+# lm.test <- lm(extent ~ parea + residuals(lm.temp2), data = halo)
+
+lm.temp3 <- lm(log(extent) ~ log(parea), data = halo)
+
+newdat5 <- expand.grid(comp1 = seq(min(halo$comp1), max(halo$comp1), by = 0.01), location = c("Florida", "Belize"), pisc.den = mean(halo$pisc.den))
+
+pred.extent <- predict(lm.more, newdata = newdat5, se = T)
+newdat5$pred.extent <- pred.extent$fit
+newdat5$se.low <- newdat5$pred.extent - pred.extent$se.fit
+newdat5$se.high <- newdat5$pred.extent + pred.extent$se.fit
+
+ggplot(newdat5, aes(x=comp1, y = pred.extent, color = location))+
+  geom_line(aes(x=comp1, y = pred.extent, color = location))+
+  geom_line(aes(x = comp1, y = se.low, color = location))+
+  geom_line(aes(x = comp1, y = se.high, color = location))+
+  geom_point(data = halo, aes(x = comp1, y = extent, group = location))
+  
+fg3 <- ggplot(halo, aes(x=comp1, y = extent))+
+    geom_smooth(method = lm, color = "black")+
+    stat_summary(fun.data = "mean_se", aes(shape=location), fill = "white", color = "black")+
+    scale_shape_manual(values = c(24,21), name = "")+
+    scale_y_continuous(name = "Halo Width (m)", breaks = seq(0,40, by = 5))+
+    scale_x_continuous(name = expression("PCA1: Variance of Herbivore Density (#/"~m^{2}~") and Patch Area ("~m^{2}~")"), breaks = seq(-2,3, by = .5))+
+    # annotate("text", x = -1, y = 40, label = lm_eqn(lm.more), colour="black", size = 3.5, parse=TRUE)+
+    # annotate("text",x = -1, y = 38.5, label = "p < 0.001", size = 3.5)+
+    # annotate("text",x = -1, y = 37, label = "n = 13 patch reefs", size = 3.5)+
+    theme_bw() + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())+
+    theme(legend.justification=c(0,1), legend.position=c(0.05,0.95))+
+    theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+# pdf("Figures/Draft_finalfigures/Fig3.pdf", width = 7, height = 5.5)
+# fg3
+# dev.off()
+
+#######################################
+## Combined landscape and local scales
+########################################
+
+fig3 <- plot_grid(fg3,fig.all,align = "h")
+fig3
+
+# jpeg("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/Fig3_redue2.jpg", width = 12, height = 6, units = "in", res = 300)
+# fig3
+# dev.off()
+
+
+
+
+
+
+```
+
+```{r supplementalfig.X_fittoeachpatch}
+
+newdat6 <- expand.grid(Distance = seq(0,20,length.out = 130), tnuminpatch.f = c(1:3), pisc.den = aw.norm.second$pisc.den[aw.norm.second$pnum.f != 20 & aw.norm.second$pnum.f != 21 & aw.norm.second$pnum.f != 22])
+
+newdat6$pnum.f = rep(c(1:7,10:12,17:19), each = 390)
+newdat6$comp1 <- rep(mergefile$comp1, each = 390)
+newdat6$sub = ifelse(newdat6$pnum.f < 11, "Seagrass", "Macroalgea")
+newdat6$location = ifelse(newdat6$pnum.f < 11, "Belize", "Florida")
+
+newdat6$pnum.f <- as.factor(newdat6$pnum.f)
+newdat6$sub <- as.factor(newdat6$sub)
+newdat6$tnuminpatch.f <- as.factor(newdat6$tnuminpatch.f)
+
+newdat6$predict.beta2 <- predict(beta2, newdat6)
+newdat6$predict.bino1 <- predict(bino1, newdat6)
+newdat6$pred.unconditional <- newdat6$predict.beta2 * newdat6$predict.bino1
+
+newdat6$pnum.f.reordered <- reorder(newdat6$pnum.f, -newdat6$pisc.den)
+df$pnum.f.reordered <- reorder(df$pnum.f, -df$pisc.den)
+newdat6$labelz <- reorder(as.factor(paste(newdat6$location, newdat6$pnum.f)), -newdat6$pisc.den) 
+df$labelz <- reorder(as.factor(paste(df$location, df$pnum.f.)), -df$pisc.den) 
+
+
+ggplot(newdat6, aes(x=Distance, y = pred.unconditional, group = labelz))+
+  geom_line(data = newdat6, aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
+  geom_point(data = df, aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
+  facet_wrap(~ labelz)
+
+fl <- ggplot(newdat6[newdat6$location == "Florida", ], aes(x=Distance, y = pred.unconditional, group = labelz))+
+  geom_line(data = newdat6[newdat6$location == "Florida", ], aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
+  geom_point(data = df[df$location == "Florida", ], aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
+  facet_wrap(~ labelz)
+
+bz <- ggplot(newdat6[newdat6$location == "Belize", ], aes(x=Distance, y = pred.unconditional, group = labelz))+
+  geom_line(data = newdat6[newdat6$location == "Belize", ], aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
+  geom_point(data = df[df$location == "Belize", ], aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
+  facet_wrap(~ labelz)
+
+pa <- fl + labs(x = "")
+
+plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+
+# pdf("Figures/Draft_finalfigures/FigsS4.pdf", width = 8, height = 12)
+# plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+# dev.off()
+
+jpeg("Figures/Draft_finalfigures/FigsS4_redue.jpg", width = 8, height = 12, units = "in", res = 300)
+plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+dev.off()
+
+```
+
+```{r supplementalfig.X_effectsizes_redue}
+
+model1Frame <- data.frame(Variable = rownames(summary(beta1)$coefficients$cond),
+                          Coefficient = summary(beta1)$coefficients$cond[, 1],
+                          SE = summary(beta1)$coefficients$cond[, 2],
+                          Model = "Beta LME", 
+                          pvalue = summary(beta1)$coefficients$cond[, 4])
+model2Frame <- data.frame(Variable = rownames(summary(bino1)$coefficients$cond),
+                          Coefficient = summary(bino1)$coefficients$cond[, 1],
+                          SE = summary(bino1)$coefficients$cond[, 2],
+                          pvalue = summary(bino1)$coefficients$cond[, 4],
+                          Model = "Binomial GLME")
+
+# Combine these data.frames
+allModelFrame <- data.frame(rbind(model1Frame, model2Frame))  # etc.
+row.names(allModelFrame) <- NULL
+allModelFrame$sig <- ifelse(allModelFrame$pvalue < 0.05, "black", "white")
+
+
+allModelFrame$vnames <- c("intercept", "Distance", "PCA1", "Piscivore Density", "Distance x Piscivore Density", "Distance x PCA1", "intercept", "Distance", "Piscivore Density", "PCA1", "Distance x Piscivore Density", "Distance x PCA1")
+
+modeframe.forgg <- allModelFrame[allModelFrame$vnames != "intercept", ]
+
+# Plot
+zp1 <- ggplot(modeframe.forgg, aes(colour = Model))+
+  geom_hline(yintercept = 0, colour = gray(1/2), lty = 2)+
+  geom_linerange(aes(x = vnames, ymin = Coefficient - SE, ymax = Coefficient + SE), lwd = 1, position = position_dodge(width = 1/2))+
+  geom_pointrange(aes(x = vnames, y = Coefficient, ymin = Coefficient - SE, ymax = Coefficient + SE, fill = sig),lwd = 1/2, position = position_dodge(width = 1/2),shape = 21)+
+  scale_fill_manual(values = c("black","white"), guide = FALSE)+
+  coord_flip() + 
+  theme_bw()+
+  theme(axis.title.y = element_blank())
+print(zp1)  # The trick to these is position_dodge().
+
+# pdf("Figures/Draft_finalfigures/FigsS4.pdf", width = 6, height = 4)
+# zp1
+# dev.off()
+
+# jpeg("Figures/Draft_finalfigures/FigsS4_redue2.jpg", width = 6, height = 4, units = "in", res = 300)
+# zp1
+# dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
