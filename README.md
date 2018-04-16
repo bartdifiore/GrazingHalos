@@ -1,6 +1,6 @@
 # GrazingHalos
 
-This repository contains code files associated with the analysis of drivers of variation in grazing halos. The code represents the analysis conducted for the recently submitted manuscript. 
+This repository contains code files associated with the analysis of drivers of variation in grazing halos. The code represents the analysis conducted for the recently submitted manuscript. Data will be provided upon request (bdifiore@ucsb.edu) and will be uploaded to Dryad in the near future.
 
 # **final_analysis.Rmd**
 
