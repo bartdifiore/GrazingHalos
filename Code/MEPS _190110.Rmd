@@ -1,0 +1,1272 @@
+---
+title: "Final_Analysis"
+author: "Bart_DiFiore"
+date: "December 5, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, include = F)
+```
+
+```{r cleanworkspace, include=FALSE}
+
+rm(list = ls()) 
+
+setwd("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/")
+
+```
+
+```{r libraries, include=FALSE}
+
+library(lme4)
+library(lmerTest)
+library(car)
+library(ggplot2)
+library(glmmTMB)
+library(cowplot)
+library(dplyr)
+library(tidyr)
+
+
+source("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R_Files/predictzeroinfl.R")
+source("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R_Files/Functions.R")
+source("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R_Files/simulate_glmmTMB.R")
+source("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R_Files/plot_halos.R")
+```
+
+```{r getgrazingdata}
+
+GM <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/MasterFiles/GrazingMaster.txt", header=TRUE, sep = "\t")
+head(GM) #Display the first 6 rows. 
+
+
+#Basic analysis!!!! Add in columns that estimate the change in area of each blade.  
+
+GM$Difference <- GM$AreaBefore - GM$AreaAfter # Calculate the difference in area before and after.  
+
+GM$PercentChange <- (GM$AreaBefore-GM$AreaAfter) / (GM$AreaBefore) #Calculate the percent change in area. 
+
+Bite <- GM$BiteYN.Corrected == "Y" # Create a new objec that is an array testing if Bite...ed is equal to "Y" 
+
+GM$PC.NoZ <- ifelse(Bite == TRUE, yes = GM$PercentChange, no = 0) # Create another variable that forces the percent change to zero for all unbitten seagrass blades.
+
+GM$diff.noz <- ifelse(Bite == TRUE, yes = GM$Difference, no = 0)
+
+GM$diff.noz <- ifelse(GM$diff.noz < 0, yes = 0, no = GM$diff.noz)
+
+#Taking the average of the pairs isn't the best approach. Liza recommended using the total area of BOTH clips and taking the ratio before and after. Lets try this.
+
+d <- GM 
+
+d$clipAB.cor <- ifelse(d$Clip.AB == "a" | d$Clip.AB == "A", "A", "B")
+
+dA <- subset(d, subset = d$clipAB.cor == "A")
+dB <- subset(d, subset = d$clipAB.cor == "B")
+
+dA$aacor <- ifelse(dA$BiteYN.Corrected == "N", dA$AreaBefore, dA$AreaAfter)
+dB$aacor <- ifelse(dB$BiteYN.Corrected == "N", dB$AreaBefore, dB$AreaAfter)
+
+names(dA) <- c("Record.Num", "Patch.CT", "Patch.Num", "UniquePatch.num" , "TransectColor", "Clip.Label", "Distance", "Clip.AB", "AreaBefore_A", "AreaAfter_A", "BiteYN", "BiteYN.Corrected_A", "Difference", "PercentChange", "PC.NoZ", "diff.noz", "clipAB.cor", "aacor_A")
+
+names(dB) <- c("Record.Num", "Patch.CT", "Patch.Num", "UniquePatch.num" , "TransectColor", "Clip.Label", "Distance", "Clip.AB", "AreaBefore_B", "AreaAfter_B", "BiteYN", "BiteYN.Corrected_B", "Difference", "PercentChange", "PC.NoZ", "diff.noz", "clipAB.cor", "aacor_B")
+
+new <- data.frame(UniquePatch.num = dA$UniquePatch.num, 
+                  TransectColor = dA$TransectColor, 
+                  Distance = dA$Distance, 
+                  AreaBefore_A = dA$AreaBefore_A, 
+                  aacor_A = dA$aacor,
+                  BiteYN.Corrected_A = dA$BiteYN.Corrected_A,
+                  AreaBefore_B = dB$AreaBefore_B, 
+                  aacor_B = dB$aacor_B, 
+                  BiteYN.Corrected_B = dB$BiteYN.Corrected_B)
+
+new$totalbefore <- new$AreaBefore_A + new$AreaBefore_B
+new$totalafter <- new$aacor_A + new$aacor_B
+
+new$difference <- new$totalbefore - new$totalafter
+new$difference.cor <- ifelse(new$difference < 0, 0, new$difference) # this line of code forces all blades with a difference less than 0 to show no grazing (0 grazing)
+new$ratio <- new$difference.cor/new$totalbefore
+
+new$transect.num <- rep(1:63, each = 11)
+
+#Add a number for each transect within each patch... 
+
+new$tnuminpatch <- rep(1:3, each = 11, times = 21)
+
+
+
+```
+
+```{r setupfishdata}
+
+#########
+#Get Data
+#########
+
+
+library(reshape)
+
+
+Names <- read.csv("RawFiles/Unique_Species_revised.csv", header = TRUE) # Read in the file with the metadata. 
+
+VS <- read.table("RawFiles/VisualSurveys_WorkingFile.txt", header = TRUE, sep = "\t") # Readin the master file. 
+t <- unique(VS$Species.Ident) #save the unique species names
+vs <- VS[VS$Species.Ident != t[33], ] # get rid of the problematic "C.Rostrada"... we didn't see any anyway... 
+
+VS.Master <- merge(vs, Names) # merge the two files
+
+RecordNum.S <- order(VS.Master$Record.Num) # create a sort object on the record number (record number to so as to maintain the original sort)
+
+VS.Master <- VS.Master[RecordNum.S, ] # Sort the master file by the sort object.  
+
+VS.Master[, c(14:27)][is.na(VS.Master[, c(14:27)])] <- 0
+
+patch <- read.table("RawFiles/PatchCharacteristics.csv", header = TRUE, sep = ",")
+rug <- patch[,c(1,10, 23)]
+rug$pnum.f <- as.factor(rug$pnum)
+
+NT <- read.csv("RawFiles/NT_merge.csv")
+names(NT) <- c("UniquePatch.Num", "NoTake", "sub")
+
+VS.Master <- merge(VS.Master, NT)
+
+#Fix the parrotfish issue...
+
+VS.Master$ident.cor <- ifelse(VS.Master$sub == "Seagrass" & VS.Master$Common.Ident == "Parrotfish_Unident" & VS.Master$T2.0_5 > 0, "JuvenilleParrot_Unident", paste(VS.Master$Common.Ident))
+
+VS.Master$Common.Ident <- as.factor(VS.Master$ident.cor)
+VS.Master <- VS.Master[,-39]
+
+# Fix the pisc.herb.invert issue 
+
+VS.Master$Piscivore_Herbivore <- addNA(VS.Master$Piscivore_Herbivore)
+levels(VS.Master$Piscivore_Herbivore) <- c("Herb", "Invert", "Pisc", "other")
+
+#Other files needed later
+numtransects <- read.csv("RawFiles/numtransects.csv")
+fish <- read.csv("RawFiles/FishID.csv")
+
+```
+
+```{r configurefishdata}
+
+#############################
+# Melt DataFrame
+#############################
+
+data.1 <-melt(VS.Master, measure.vars = c('T1.10_15', 'T1.15_20', 'T1.20_25', 'T1.25_30', 'T1.30', 'T1_Unknown','T2.0_5', 'T2.5_10', 'T2.10_15', 'T2.15_20', 'T2.20_25', 'T2.25_30', 'T2.30', 'T2.Unknown'))
+
+#Rename the new variables
+names(data.1)[names(data.1) == 'value'] <- 'frequency'
+names(data.1)[names(data.1) == 'variable'] <- 'sizeclass'
+
+data.1 <- data.1[,-c(2,3,5,8:14)] #Get rid of unwanted columns
+head(data.1)
+
+#Make new variable for each pass of the transect. "first" = first pass; "second" = second pass
+
+out <- substr(data.1$sizeclass, 0, 2)
+data.1$pass <- ifelse(out=="T1", "first", "second")
+
+data.1$treatment <- as.factor(ifelse(data.1$NoTake == "TRUE", "protected", "fished"))
+data.1$pnum.f <- as.factor(data.1$UniquePatch.Num)
+data.1$transect.f <- as.factor(data.1$Transect)
+
+data.1$location <- ifelse(data.1$sub == "Seagrass", "Belize", "Florida")
+data.1 <- data.1[data.1$UniquePatch.Num != 13, ]
+
+# Get transect numbers
+numtransects <- read.csv("RawFiles/numtransects.csv")
+
+```
+
+```{r subsettopatches}
+
+fs <- data.1[data.1$UniquePatch.Num < 20, ] # subset to patches
+
+fs <- fs[fs$pass == "second", ] # subset only to the second pass
+
+```
+
+```{r summaryfish}
+#####################################################
+# Whose Who? 
+#####################################################
+#What species did I see? Who was most common? Broken down by country. 
+
+#All Species
+
+all.numbers <- aggregate(fs$frequency, list(Common.Ident = fs$Common.Ident,sub = fs$sub), sum, na.rm=TRUE)
+names(all.numbers)[names(all.numbers) == 'x'] <- 'frequency'
+mostcommon.belize <- all.numbers[all.numbers$sub == "Seagrass",]
+Ord.x <- order(mostcommon.belize$frequency, decreasing = TRUE)
+mostcommon.belize <- mostcommon.belize[Ord.x, ][1:20, ] 
+
+mostcommon.fk <- all.numbers[all.numbers$sub == "Macroalgea",]
+Ord.x <- order(mostcommon.fk$frequency, decreasing = TRUE)
+mostcommon.fk <- mostcommon.fk[Ord.x, ][1:20, ]
+
+
+#Piscivores/Herbivores
+#I want to create a table of the most commonly encountered piscivores. It doesn't matter what pass they were seen on... it doesn't matter if they were in NoTake or Fished areas. It does matter the country. 
+
+pisc.herb.numbers <- aggregate(fs$frequency, by = list(Common.Ident = fs$Common.Ident, pisc.herb = fs$Piscivore_Herbivore, sub =fs$sub), FUN = sum)
+names(pisc.herb.numbers)[names(pisc.herb.numbers) == 'x'] <- 'frequency'
+
+#Herbs in Belize
+herb.belize <- pisc.herb.numbers[pisc.herb.numbers$sub == "Seagrass" & pisc.herb.numbers$pisc.herb == "Herb",]
+Ord.x <- order(herb.belize$frequency, decreasing = TRUE)
+herb.belize <- herb.belize[Ord.x, ][1:10, ] 
+
+#Herbs in Florida
+herb.fk <- pisc.herb.numbers[pisc.herb.numbers$sub == "Macroalgea" & pisc.herb.numbers$pisc.herb == "Herb",]
+Ord.x <- order(herb.fk$frequency, decreasing = TRUE)
+herb.fk <- herb.fk[Ord.x, ][1:20, ] 
+
+#Pisc in Belize
+pisc.belize <- pisc.herb.numbers[pisc.herb.numbers$sub == "Seagrass" & pisc.herb.numbers$pisc.herb == "Pisc",]
+Ord.x <- order(pisc.belize$frequency, decreasing = TRUE)
+pisc.belize <- pisc.belize[Ord.x, ][1:10, ] 
+
+#Pisc in Florida
+pisc.fk <- pisc.herb.numbers[pisc.herb.numbers$sub == "Macroalgea" & pisc.herb.numbers$pisc.herb == "Pisc",]
+Ord.x <- order(pisc.fk$frequency, decreasing = TRUE)
+pisc.fk <- pisc.fk[Ord.x, ][1:10, ] 
+
+```
+
+```{r makenewdataframeformodeling}
+
+# Make a new data frame to use as the basis of the grazing modfls 
+
+numtransects$pnum.f <- as.factor(numtransects$UniquePatch.Num)
+
+fish <- fs %>%
+  group_by(Piscivore_Herbivore, location, pnum.f) %>%
+  summarize(raw.abun = sum(frequency)) %>%
+  left_join(numtransects) %>% 
+  select(-UniquePatch.Num) %>%
+  mutate(abundance = raw.abun/Num.Transects, density = abundance/250) %>%
+  select(-c(Num.Transects, raw.abun))%>%
+  filter(Piscivore_Herbivore == "Pisc" | Piscivore_Herbivore == "Herb") %>%
+  gather(variable, value, -(Piscivore_Herbivore:pnum.f))%>%
+  unite(temp, Piscivore_Herbivore, variable)%>%
+  spread(temp, value)
+  
+
+length <- read.csv("RawFiles/lengths.csv", header = TRUE, sep = ",")
+
+
+temp <- fs %>%
+  group_by(Piscivore_Herbivore, location, pnum.f) %>%
+  summarize(total.abun = sum(frequency)) %>%
+  ungroup()%>%
+  select(-location)
+
+fish.size <- fs %>%
+  group_by(Piscivore_Herbivore, sizeclass, location, pnum.f) %>%
+  summarize(raw.abun = sum(frequency)) %>%
+  filter(Piscivore_Herbivore == "Pisc" | Piscivore_Herbivore == "Herb") %>%
+  left_join(length) %>%
+  mutate(total.size = raw.abun*length) %>%
+  group_by(Piscivore_Herbivore, location, pnum.f) %>%
+  summarize(total.size = sum(total.size, na.rm = T)) %>%
+  left_join(temp) %>%
+  mutate(mean.size = total.size/total.abun) %>%
+  select(-total.size, -total.abun) %>%
+  spread(Piscivore_Herbivore, mean.size)
+
+names(fish.size) <- c("location", "pnum.f", "Herb.size", "Pisc.size")
+
+fish <- fish %>% 
+  bind_cols(select(ungroup(fish.size), Herb.size, Pisc.size))
+
+pa <- read.table("~/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/patcharea.csv", header = T, sep = ",")
+
+aw.norm.second <- fish %>% 
+  bind_cols(select(pa, sub, parea, pextent))
+
+names(aw.norm.second) <- c("location", "pnum.f", "herbn", "herb.den", "predn", "pred.den", "herb.size", "pred.size", "sub", "parea", "pextent")
+
+#write.table(aw.second.norm, "RawFiles/vssecond.csv", sep = ",", row.names = F)
+
+parrot <- fs %>%
+  group_by(parrot_pred, location, pnum.f) %>%
+  summarize(raw.abun = sum(frequency)) %>%
+  left_join(numtransects) %>% 
+  select(-UniquePatch.Num) %>%
+  mutate(abundance = raw.abun/Num.Transects, density = abundance/250) %>%
+  select(-c(Num.Transects, raw.abun))%>%
+  filter(parrot_pred == 1) %>%
+  mutate(parrot.den = density)
+
+aw.norm.second <- aw.norm.second %>%
+  bind_cols(select(ungroup(parrot), parrot.den))
+
+```
+
+```{r fishDifferences}
+
+## Differences between locations
+
+
+diff <- fs %>% group_by(Piscivore_Herbivore,location, pnum.f, transect.f) %>%
+  summarize(abundance = sum(frequency)) %>%
+  filter(Piscivore_Herbivore == "Herb" | Piscivore_Herbivore == "Pisc")
+
+lm.diff <- lm(abundance ~ location*Piscivore_Herbivore, data = diff)
+summary(lm.diff)
+
+summary(aov(abundance ~ location*Piscivore_Herbivore, data = diff))
+
+```
+
+```{r mergepatchdata}
+
+###################
+#Structure the data
+###################
+
+#aw.norm.second <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/final_rawfiles/vssecond.csv", sep = ",", header=T)
+
+dat.second <- merge(new, aw.norm.second, by.x = "UniquePatch.num", by.y = "pnum.f")
+
+
+#Data for second pass of transect... 
+c.second <- dat.second[,c("UniquePatch.num","Distance","totalbefore","difference.cor","ratio","transect.num","tnuminpatch","location","sub","herbn","predn","herb.size","pred.size","parea", "pextent", "parrot.den")]
+
+c.second$pnum.f <- as.factor(c.second$UniquePatch.num)
+c.second$tnuminpatch.f <- as.factor(c.second$tnuminpatch)
+c.second$transect.num.f <- as.factor(c.second$transect.num)
+c.second$herb.den <- c.second$herbn/250
+c.second$pred.den <- c.second$predn/250
+
+############# Add in a bitten variable 
+
+c.second$bitten <- ifelse(c.second$ratio == 0, 0, 1)
+
+```
+
+```{r standarize_time}
+
+###################
+# Standardize Time
+###################
+
+c.second$ratio.time <- ifelse(c.second$sub == "Macroalgea", c.second$ratio/3, c.second$ratio)
+
+rescale <- function(x,...){ 
+  (x - min(x))/(max(x) - min(x))}
+
+test <- seq(0,0.3, length.out = 10)
+rescale(x = test) # This looks good but NA's are going to be a problem. Lets subset and get rid of the NA's and patch reefs that we don't care about. 
+
+df <- c.second[, c("UniquePatch.num", "Distance", "ratio", "location", "sub", "parea", "pextent", "pnum.f", "tnuminpatch.f", "transect.num.f", "bitten", "ratio.time", "pred.size", "herb.size", "herbn", "predn", "herb.den", "pred.den", "parrot.den")]
+
+df <- drop_na(df, ratio)
+
+df <- df[df$UniquePatch.num < 20, ]
+
+macro <- df[df$sub == "Macroalgea", ]
+macro$ratio.stan <- rescale(macro$ratio)
+
+sea <- df[df$sub == "Seagrass", ]
+sea$ratio.stan <- rescale(sea$ratio)
+
+df <- rbind(sea, macro)
+df$ratio.stancor <- ifelse(df$ratio.stan == 1, 0.9999999, df$ratio.stan)
+
+```
+
+```{r summary_stats}
+
+#Average amount of grazing +- se
+mean.all <- c(mean(df$ratio.stancor), sd(df$ratio.stancor))
+
+#probabilty of grazing
+prob.all <- length(df$bitten[df$bitten == 1]) / length(df$bitten)
+
+# Mean grazing by location
+      fl.mean <- c(mean(df$ratio.stancor[df$location == "Florida"]), sd(df$ratio.stancor[df$location == "Florida"]))
+      
+      bz.mean <- c(mean(df$ratio.stancor[df$location == "Belize"]), sd(df$ratio.stancor[df$location == "Belize"]))
+
+
+# Range of patch sizes for local sites
+range(aw.norm.second$parea)
+
+# Range of halo widths for local sites
+range(aw.norm.second$pextent)
+
+# Range of herbivore densities
+range(aw.norm.second$herb.den)
+
+# Range of herbivore densities
+range(aw.norm.second$pred.den)
+
+```
+
+```{r pca}
+
+# Create PCA 1 variable to use in models
+
+temp.pca <- scale(aw.norm.second[,c("herb.den", "parea")])
+
+pca1 <- princomp(temp.pca)
+
+mergefile <- data.frame(pnum.f = aw.norm.second$pnum.f, comp1 = pca1$scores[,1])
+
+df <- merge(df, mergefile, by = "pnum.f")
+aw.norm.second <- merge(aw.norm.second, mergefile, by = "pnum.f")
+  
+```
+
+```{r model_beta}
+
+beta.rich <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(pred.den) * scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = "beta_family")
+summary(beta.rich)
+modelassump(beta.rich)
+
+beta1 <- glmmTMB(ratio.stancor ~ scale(Distance) * (scale(pred.den) + scale(comp1)) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = "beta_family")
+summary(beta1)
+modelassump(beta1)
+
+beta2 <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(comp1) + scale(pred.den) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = "beta_family")
+summary(beta2)
+modelassump(beta2)
+
+beta2.test <- glmmTMB(ratio.stancor ~ scale(Distance) + scale(comp1) + scale(pred.den) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = "beta_family")
+summary(beta2.test)
+
+  #Check assumptions graphically
+    modelassump((beta2))
+    plot(residuals(beta2) ~ df$Distance[df$ratio.stancor > 0])
+    plot(residuals(beta2) ~ jitter(df$comp1[df$ratio.stancor > 0]))
+    plot(residuals(beta2) ~ jitter(df$pred.den[df$ratio.stancor > 0]))
+    
+anova(beta2, beta2.test)
+    
+```
+
+```{r model_binomial}
+
+bino.rich <-  glmmTMB(bitten ~ scale(Distance) * scale(pred.den) * scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino.rich)
+modelassump((bino.rich))
+
+bino1 <-  glmmTMB(bitten ~ scale(Distance) * (scale(pred.den) + scale(comp1)) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino1)
+modelassump((bino1))
+
+bino1.testa <-  glmmTMB(bitten ~ scale(Distance) * scale(comp1) + scale(pred.den) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino1.testa)
+
+bino1.testb <-  glmmTMB(bitten ~ scale(Distance) * scale(pred.den) + scale(comp1) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(bino1.testb)
+
+
+anova(bino1,bino1.testa)
+anova(bino1,bino1.testb)
+
+```
+
+```{r fig2}
+fg2.pa <- plot.bd(df, focal = "pred.den", constant = "comp1", beta2, bino1, ylab = expression(paste("Predator density (ind. "~m^{-2}~")")), xlab = "Distance from reef (m)")
+fg2.pa
+
+fg2.pb <- plot.bd(df, focal = "comp1", constant = "pred.den", beta2, bino1, ylab = "PCA1", xlab = "Distance from reef (m)")
+fg2.pb
+
+fig2 <- plot_grid(fg2.pa + labs(x = "", y = "") + theme(legend.position="none"), fg2.pb, ncol = 1, align = "v")
+fig2
+
+
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/fig2_pred.svg", width = 7, height = 5.5)
+# fg2.pa
+# dev.off()
+# 
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/fig2_pca.svg", width = 7, height = 5.5)
+# fg2.pb
+# dev.off()
+# 
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/fig2.svg", width = 7, height = 11)
+# fig2
+# dev.off()
+
+##########################
+## Figure 2 summary stats
+##########################
+
+p.high <- data.frame(Distance = seq(0,20, length.out = 100), pred.den = 0.02, comp1 = mean(df$comp1))
+
+mm1 <- model.matrix(delete.response(terms(beta2)),p.high) #create a new model matrix
+  p.high$predict.model1 <- plogis(drop(mm1 %*% fixef(beta2)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+  
+p.low <- data.frame(Distance = seq(0,20, length.out = 100), pred.den = 0.01, comp1 = mean(df$comp1))
+
+mm1 <- model.matrix(delete.response(terms(beta2)),p.low) #create a new model matrix
+  p.low$predict.model1 <- plogis(drop(mm1 %*% fixef(beta2)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+  
+  p.low$pred.unconditional <- p.low$predict.model1 * p.low$predict.model2
+
+  
+  mean((p.low$predict.model1-p.high$predict.model1)/p.low$predict.model1)
+  
+  
+  
+  
+
+p.high <- expand.grid(Distance = seq(0,20,length.out = 100), comp1 = seq(min(df[, "comp1"]), max(df[, "comp1"]), length.out = 100))
+  p.high$pred.den <- max(df$pred.den) # hold pisc.den at its global mean
+  names(p.high) <- c("Distance", "comp1", "pred.den" )
+  
+  mm1 <- model.matrix(delete.response(terms(beta2)),p.high) #create a new model matrix
+  p.high$predict.model1 <- plogis(drop(mm1 %*% fixef(beta2)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+  
+  mm2 <- model.matrix(delete.response(terms(bino1)),p.high)
+  p.high$predict.model2 <- plogis(drop(mm2 %*% fixef(bino1)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+  
+  p.high$pred.unconditional <- p.high$predict.model1 * p.high$predict.model2
+  
+p.low <- expand.grid(Distance = seq(0,20,length.out = 100), comp1 = seq(min(df[, "comp1"]), max(df[, "comp1"]), length.out = 100))
+  p.low$pred.den <- min(df$pred.den) # hold pisc.den at its global mean
+  names(p.low) <- c("Distance", "comp1", "pred.den" )
+  
+  mm1 <- model.matrix(delete.response(terms(beta2)),p.low) #create a new model matrix
+  p.low$predict.model1 <- plogis(drop(mm1 %*% fixef(beta2)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+  
+  mm2 <- model.matrix(delete.response(terms(bino1)),p.low)
+  p.low$predict.model2 <- plogis(drop(mm2 %*% fixef(bino1)[[1]])) # calculate predictions on the fixed effects using matrix multiplication and convert to the scale of the response using plogis (see Brooks et al. 2017, appendix B)
+  
+  p.low$pred.unconditional <- p.low$predict.model1 * p.low$predict.model2 
+  
+mean((p.high$predict.model1-p.low$predict.model1)/p.low$predict.model1) 
+
+##############################################
+## Plots of incidenc and intensity seperate
+##############################################
+
+plot.one(df, "comp1", "pred.den", beta2, ylab = "PCA1", xlab = "Distance from reef (m)")
+
+plot.one(df, "comp1", "pred.den", bino1, ylab = "PCA1", xlab = "Distance from reef (m)")
+
+```
+
+```{r landscape_analysis}
+
+###########################################################
+### Summary Stats for the Halo Analysis
+###########################################################
+setwd("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/halo_analysis")
+nnd <- read.table("/Users/bartdifiore/Desktop/LVM_share/nnd.csv", header = T, sep = ",")
+ls <- read.table("geometries.csv", header = T, sep = ",")
+
+means <- aggregate(nnd$Distance, by = list(InputID = nnd$InputID), FUN = mean)
+names(means)[2] <- "Means"
+
+sd <- aggregate(nnd$Distance, by = list(InputID = nnd$InputID), FUN = sd)
+names(sd)[2] <- "SD"
+
+summary <- cbind(means, sd[2])
+#hist(summary$Means, breaks = 30, xlab = "Halo Extent (m)", main = "")
+
+################
+#Bring in the other geometries nnda
+
+ls <- ls[!duplicated(ls$ID), ]
+
+ls <- merge(ls,means, by.x = "ID", by.y = "InputID")
+
+names(ls) <- c("ID", "Name", "band", "patch.area", "patch.perimeter", "halo.area", "halo.perimeter", "total.area", "meanz", "minz", "maxz", "medianz", "countz", "dist_to_34m", "dist_to_land", "overlap_area", "number_intersecting_patches", "halo.extent")
+
+################
+# For text 
+################
+
+lm.depth <- lm(halo.extent ~ meanz, data = ls)
+summary(lm.depth)
+
+lm.distance <- lm(halo.extent ~ dist_to_land, data = ls)
+
+total.area <- sum(ls$halo.area)/10^6
+
+##########################################################
+## Belize Landscape Analysis
+##########################################################
+
+bzdist <- read.table("~/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/out_distance.csv", sep = ",", header=T)
+
+bzgeom <- read.table("~/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/geometries.csv", sep = ",", header=T)
+
+dist <- aggregate(bzdist$Distance, by = list(bzdist$InputID), FUN = mean)
+names(dist) <- c("id", "extent")
+
+bzgeom <- merge(bzgeom, dist)
+
+###########################################################
+## All Patches
+###########################################################
+
+all <- ls[, c("ID", "patch.area", "patch.perimeter", "halo.extent")]
+all$location <- "Florida"
+names(all) <- c("id", "area", "perimeter", "extent", "location")
+
+bzgeom$id.new <- paste("bz", bzgeom$id, sep = "_")
+forall <- bzgeom[, c(6, 3:5)]
+forall$location <- "Belize"
+names(forall) <- c("id", "area", "perimeter", "extent", "location")
+all <- rbind(all, forall)
+
+# plot(extent ~ area, data = all)
+# lm.all <- lm(extent ~ area, data = all)
+# 
+# plot(log(extent) ~ log(area), data = all)
+# lm.all2 <- lm(log(extent) ~ log(area), data = all)
+
+#########################################################################
+## Bring in Field Site data 
+#########################################################################
+halo <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/halosbyobs.csv", sep = ",", header = T)
+
+##########################################################################
+## Bring in the patch characteristics data and save subset to new object
+##########################################################################
+bs <- aw.norm.second
+
+halo <- merge(halo, bs, by.x = "pnum", by.y="pnum.f")
+
+forplot <- aggregate(halo$extent, by = list(halo$parea, halo$location, halo$pnum), FUN = mean)
+names(forplot) <- c("area", "location", "pnum", "extent")
+
+forplot$id <- paste("field", forplot$pnum, sep = "_")
+forplot$perimeter <- NA
+
+all <- rbind(all, forplot[,c(5,1,6,4,2)])
+
+############################
+## Break down by site
+############################
+
+all %>% group_by(location) %>%
+  summarize(length(location))
+
+############################
+## CV
+############################
+
+#between
+
+sd(all$extent)/mean(all$extent)
+
+#within 
+
+nnd %>%
+  group_by(InputID) %>%
+  summarize(cv = sd(Distance)/mean(Distance)) %>%
+  ungroup()%>%
+  summarize(mean(cv))
+```
+
+```{r figure1_landscapehisto}
+
+hist(summary$Means, breaks = 30, xlab = "Halo Extent (m)", main = "", cex.axis = 1.7, cex.lab = 1.7, col = "gray50")
+
+hist(all$extent[all$location == "Florida"], breaks = 30, xlab = "Halo Extent (m)", main = "", cex.axis = 1.7, col = "gray50")
+hist(all$extent[all$location == "Belize"], add = T)
+
+all$forgg <- ifelse(all$location == "Belize", "b", "a")
+
+hist1 <- ggplot(data = all, aes(x = extent,  fill = forgg))+
+  geom_histogram(binwidth = 2, position = "identity", center = 3)+
+  scale_fill_manual(values = c("gray70", "gray50"), labels = c("Florida", "Belize"), name = "")+
+  labs(x = "Halo width (m)", y = "Frequency")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"), panel.border = element_blank())+
+  theme(text = element_text(size = 20))+
+  theme(legend.justification=c(0,1), legend.position=c(0.8,0.4))
+  
+
+hist1
+
+
+# jpeg("Figures/Draft_finalfigures/histo.jpg", width = 900, height = 400)
+# d <- par(mar = c(5,5,1,1))
+# hist(summary$Means, breaks = 30, xlab = "Halo Extent (m)", main = "", cex.axis = 1.9, cex.lab = 1.9, col = "gray50")
+# par(d)
+# dev.off()
+# png("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/histo_redue.png", width = 410, height = 362)
+# hist1
+# dev.off()
+
+
+
+```
+
+```{r fig3a}
+
+## Drop Outliers
+
+lm.test <- lm(log(extent) ~ log(area)*location, data = all)
+summary(lm.test)
+car::outlierTest(lm.test)
+# rstudent unadjusted p-value Bonferonni p
+# 368 -4.698024         3.1233e-06    0.0023643
+  # One outlier... drop it from the analysis...
+
+
+all <- all[-c(368), ] # Drop the outlier based on results of a Bonforoni outlier test
+
+
+##############################################
+## Halo extent ~ patch area
+##############################################
+
+hist(log(all$extent))
+plot(log(extent) ~ log(area), data = all)
+
+lm.all <- lm(log(extent) ~ log(area)*location, data = all)
+summary(lm.all)
+modelassump(lm.all)
+  #significant interaction, i.e. slopes are different between locations. Both are significantly greater than zero.
+
+coefs <- exp(coef(lm.all))
+se <- exp(summary(lm.all)$coefficients[,2])
+
+# What would a 50% change in patch area result in for halo width? 
+lm.all.0 <- lm(log(extent) ~ log(area), data = all)
+summary(lm.all.0)
+
+slope <- coef(lm.all.0)[2]
+mean <- 2^slope
+ci <- 2^confint(lm.all.0)[2,]
+
+##############################################
+## Halo extent ~ patch perimeter
+##############################################
+
+
+lm.all.p <- lm(log(extent) ~ log(perimeter)*location, data = all)
+summary(lm.all.p)
+modelassump(lm.all.p)
+plot(log(extent) ~ log(perimeter), data = all)
+plot(extent ~ perimeter, data = all)
+
+#############################################
+## Plot for all
+#############################################
+
+
+fig.all <- ggplot(all, aes(x = area, y = extent, group = location))+
+  geom_point(aes(shape = location), color = "gray70")+
+  scale_shape_manual(values=c(24,21), name = "")+
+  geom_smooth(method = lm, aes(color = location))+
+  scale_color_manual(values = c("black","gray50"), name = "")+
+  geom_point(data = forplot, aes(shape = location), color = "black", fill = scales::alpha("white", 0.8), size = 2, stroke = 1)+
+  scale_x_log10(name = expression("Patch reef area ("~m^{2}~")"), breaks = c(0, 1, 10, 100, 1000, 10000))+
+  scale_y_log10(name = "Halo Width (m)", breaks = c(0, 0.5, 1, 5, 10, 20, 40, 75))+
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())+
+  theme(legend.justification=c(0,1), legend.position=c(0.05,0.95), legend.key.width = unit(1, "inches"))+
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+
+fig.all
+
+```
+
+```{r percentinside}
+# What percentage of grazing occured inside the halo at each patch? and on average across patches? 
+dat.second <- merge(new, aw.norm.second, by.x = "UniquePatch.num", by.y = "pnum.f")
+pc <- merge(new, aw.norm.second[, c("pnum.f", "pextent")], by.x = "UniquePatch.num", by.y = "pnum.f")
+
+pc <- pc[, c("UniquePatch.num", "Distance", "totalbefore", "totalafter", "pextent")]
+
+
+pc$inout.halo <- ifelse(pc$Distance <= pc$pextent, "insidehalo", "outsidehalo")
+
+out <- pc %>% group_by(UniquePatch.num, inout.halo) %>%
+  summarize(totalbefore = sum(totalbefore, na.rm = T), totalafter = sum(totalafter, na.rm = T)) %>% 
+  mutate(prop.grazed = (totalbefore-totalafter)/totalbefore)
+
+out <- out %>%
+  select(-totalbefore, -totalafter) %>%
+  spread(inout.halo, prop.grazed)
+
+
+t.test(out$insidehalo, out$outsidehalo, paired = TRUE)
+wilcox.test(out$insidehalo, out$outsidehalo, paired = TRUE)
+
+
+temp <- pc %>% group_by(UniquePatch.num) %>% 
+  summarize(totalbefore = sum(totalbefore, na.rm = T), totalafter = sum(totalafter, na.rm = T)) %>% 
+  mutate(diff = (totalbefore - totalafter)) %>%
+  select(-totalbefore, -totalafter)
+
+pc %>% group_by(UniquePatch.num, inout.halo) %>%
+  summarize(totalbefore = sum(totalbefore, na.rm = T), totalafter = sum(totalafter, na.rm = T)) %>% 
+  left_join(temp) %>% 
+  mutate(summary = (totalbefore-totalafter)/diff) %>% 
+  group_by(inout.halo) %>%
+  summarize(mean = mean(summary), sd = sd(summary))
+
+
+temp <- df %>% group_by(pnum.f, pextent, parea) %>% 
+  summarize(mean.graze = mean(ratio.stancor)) 
+
+lm.graze <- lm(pextent ~ mean.graze, data = temp)
+lm.graze2 <- lm(mean.graze ~ parea, data = temp)
+
+temp <- dat.second %>% group_by(UniquePatch.num, pextent, parea) %>% 
+  summarize(mean.graze = mean(ratio, na.rm = T)) 
+
+
+lm.graze2 <- lm(mean.graze ~ parea, data = temp)
+```
+
+```{r figure3}
+
+model1Frame <- data.frame(Variable = rownames(summary(beta2)$coefficients$cond),
+                          Coefficient = summary(beta2)$coefficients$cond[, 1],
+                          SE = summary(beta2)$coefficients$cond[, 2],
+                          Model = "Grazing\nintensity", 
+                          pvalue = summary(beta2)$coefficients$cond[, 4])
+model2Frame <- data.frame(Variable = rownames(summary(bino1)$coefficients$cond),
+                          Coefficient = summary(bino1)$coefficients$cond[, 1],
+                          SE = summary(bino1)$coefficients$cond[, 2],
+                          pvalue = summary(bino1)$coefficients$cond[, 4],
+                          Model = "Grazing\nincidence")
+
+# Combine these data.frames
+allModelFrame <- data.frame(rbind(model1Frame, model2Frame))  # etc.
+row.names(allModelFrame) <- NULL
+allModelFrame$sig <- ifelse(allModelFrame$pvalue < 0.05, "black", "white")
+
+
+allModelFrame$vnames <- as.factor(c("intercept", "Distance", "PCA1", "Predator density", "Distance x\nPCA1", "intercept", "Distance", "Predator density", "PCA1", "Distance x\nPredator density", "Distance x\nPCA1"))
+
+modeframe.forgg <- allModelFrame[allModelFrame$vnames != "intercept", ]
+
+modeframe.forgg$vnames <- factor(modeframe.forgg$vnames, levels(modeframe.forgg$vnames)[c(4,2,3,5,6,1)]) 
+
+
+# Plot
+zp1 <- ggplot(modeframe.forgg)+
+  coord_flip() + 
+  geom_hline(yintercept = 0, colour = gray(1/2), lty = 2)+
+  geom_linerange(aes(x = vnames, ymin = Coefficient - SE, ymax = Coefficient + SE, color = Model), lwd = 1, position = position_dodge(width = 1/2))+
+  geom_point(aes(x = vnames, y = Coefficient, color = Model, fill = sig), size = 3, lwd = 1, position = position_dodge(width = 0.5), shape = 21)+
+  scale_fill_manual(values = c("black","white"), guide = guide_legend(title = "Significant at \np < 0.05"))+
+  theme_bw()+
+  theme(axis.title.y = element_blank(), axis.text = element_text(size = 12), axis.title = element_text(size = 14))
+print(zp1)  # The trick to these is position_dodge().
+
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/Fig4_MEPS_withlegend.svg", width = 7, height = 6)
+# zp1
+# dev.off()
+# 
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/Fig4_MEPS.svg", width = 7, height = 6)
+# zp1 + theme(legend.position="none")
+# dev.off()
+
+
+```
+
+```{r figure4}
+
+fg3 <- ggplot(halo, aes(x=comp1, y = extent))+
+    geom_smooth(method = lm, color = "black")+
+    stat_summary(fun.data = "mean_se", aes(shape=location), fill = "white", color = "black", lty = 2)+
+    scale_shape_manual(values = c(24,21), name = "")+
+    scale_y_continuous(name = "Halo Width (m)", breaks = seq(0,40, by = 5))+
+    scale_x_continuous(name = expression("PCA1: Variance of Herbivore Density (ind."~m^{-2}~") and Patch Area ("~m^{2}~")"), breaks = seq(-2,3, by = .5))+
+    # annotate("text", x = -1, y = 40, label = lm_eqn(lm.more), colour="black", size = 3.5, parse=TRUE)+
+    # annotate("text",x = -1, y = 38.5, label = "p < 0.001", size = 3.5)+
+    # annotate("text",x = -1, y = 37, label = "n = 13 patch reefs", size = 3.5)+
+    theme_bw() + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())+
+    theme(legend.justification=c(0,1), legend.position=c(0.05,0.95))+
+    theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+# pdf("Figures/Draft_finalfigures/Fig3.pdf", width = 7, height = 5.5)
+# fg3
+# dev.off()
+fg3
+#######################################
+## Combined landscape and local scales
+########################################
+
+fig3 <- plot_grid(fg3,fig.all,align = "h")
+fig3
+
+jpeg("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/Fig3_redue2.jpg", width = 12, height = 6, units = "in", res = 600)
+fig3
+dev.off()
+
+
+```
+
+```{r supplementalfig.X_confidenceintervals}
+
+####################################
+## Plots w/ confidence intervals
+####################################
+
+################ For pred.den
+newdat3 <- expand.grid(pred.den = seq(min(df$pred.den), max(df$pred.den), length.out = 1000))
+newdat3$comp1 <- mean(df$comp1)
+newdat3$Distance <- mean(df$Distance)
+
+## design matrix (fixed effects)
+mm5 <- model.matrix(delete.response(terms(beta2)),newdat3)
+mm6 <- model.matrix(delete.response(terms(bino1)), newdat3)
+
+newdat3$predict.beta2 <- plogis(drop(mm5 %*% fixef(beta2)[[1]]))
+             # predvar <- diag(mm5 %*% vcov(beta2)[[1]] %*% t(mm5))
+             # newdat3$SE.beta2 <- sqrt(predvar)
+newdat3$predict.bino1 <- plogis(drop(mm6 %*% fixef(bino1)[[1]]))
+newdat3$pred.unconditional <- newdat3$predict.beta2 * newdat3$predict.bino1
+
+set.seed(101)
+pred.betapar.psim <- mvrnorm(1000,mu = fixef(beta2)[[1]], Sigma = vcov(beta2)[[1]])
+pred.beta.psim <- mm5 %*% t(pred.betapar.psim)
+pred.binopar.psim <- mvrnorm(1000,mu=fixef(bino1)[[1]],Sigma=vcov(bino1)[[1]]) 
+pred.bino.psim <- mm6 %*% t(pred.binopar.psim)
+pred.ucount.psim <- plogis(pred.beta.psim)*plogis(pred.bino.psim) 
+ci.ucount <- t(apply(pred.ucount.psim,1,quantile,c(0.025,0.975))) 
+ci.ucount <- data.frame(ci.ucount)
+names(ci.ucount) = c("ucount.low","ucount.high")
+newdat3$se.low <- ci.ucount$ucount.low
+newdat3$se.high <- ci.ucount$ucount.high
+
+  #For results first line summary...
+      fr <- data.frame(pred.den = c(0.01, 0.02), comp1 = mean(df$comp1), Distance = mean(df$Distance))
+      mm.fr.beta <- model.matrix(delete.response(terms(beta2)), fr)
+      mm.fr.bino <- model.matrix(delete.response(terms(bino1)), fr)
+      fr$predicted <- plogis(drop(mm.fr.beta %*% fixef(beta2)[[1]])) * plogis(drop(mm.fr.bino %*% fixef(bino1)[[1]]))
+      sumforoutput <- (fr$predicted[1] - fr$predicted[2]) / fr$predicted[1]
+
+p1 <- ggplot(df, aes(x=pred.den, y = ratio.stancor))+
+  geom_point(aes(x=jitter(pred.den)), shape = 21, color = "black")+
+  geom_line(data = newdat3, aes(x = pred.den, y = pred.unconditional))+
+  geom_line(data=newdat3, aes(x = pred.den, y = se.low), lty = 4, color = "grey50")+
+  geom_line(data=newdat3, aes(x = pred.den, y = se.high),lty = 4, color = "grey50")+
+  labs(x = expression("Piscivore density (#/"~m^{2}~")"), y = "Proportion grazed")+
+  theme_bw()
+
+################ For Comp1 
+
+newdat4 <- expand.grid(comp1 = seq(min(df$comp1), max(df$comp1), length.out = 1000))
+newdat4$pred.den <- mean(df$pred.den)
+newdat4$Distance <- mean(df$Distance)
+
+## design matrix (fixed effects)
+mm7 <- model.matrix(delete.response(terms(beta2)),newdat4)
+mm8 <- model.matrix(delete.response(terms(bino1)), newdat4)
+
+newdat4$predict.beta2 <- plogis(drop(mm7 %*% fixef(beta2)[[1]]))
+             # predvar <- diag(mm7 %*% vcov(beta2)[[1]] %*% t(mm7))
+             # newdat4$SE.beta2 <- sqrt(predvar)
+newdat4$predict.bino1 <- plogis(drop(mm8 %*% fixef(bino1)[[1]]))
+newdat4$pred.unconditional <- newdat4$predict.beta2 * newdat4$predict.bino1
+
+set.seed(101)
+pred.betapar.psim <- mvrnorm(1000,mu = fixef(beta2)[[1]], Sigma = vcov(beta2)[[1]])
+pred.beta.psim <- mm7 %*% t(pred.betapar.psim)
+pred.binopar.psim <- mvrnorm(1000,mu=fixef(bino1)[[1]],Sigma=vcov(bino1)[[1]]) 
+pred.bino.psim <- mm8 %*% t(pred.binopar.psim)
+pred.ucount.psim <- plogis(pred.beta.psim)*plogis(pred.bino.psim) 
+ci.ucount <- t(apply(pred.ucount.psim,1,quantile,c(0.025,0.975))) 
+ci.ucount <- data.frame(ci.ucount)
+names(ci.ucount) = c("ucount.low","ucount.high")
+newdat4$se.low <- ci.ucount$ucount.low
+newdat4$se.high <- ci.ucount$ucount.high
+
+
+p2 <- ggplot(df, aes(x=comp1, y = ratio.stancor))+
+  geom_point(aes(x=jitter(comp1)), shape = 21, color = "black")+
+  geom_line(data = newdat4, aes(x = comp1, y = pred.unconditional))+
+  geom_line(data=newdat4, aes(x = comp1, y = se.low), lty = 4, color = "grey50")+
+  geom_line(data=newdat4, aes(x = comp1, y = se.high),lty = 4, color = "grey50")+
+  labs(x = expression("PCA1: Variance of Herbivore Density (#/"~m^{2}~") and Patch Area ("~m^{2}~")"), y = "Proportion grazed")+
+  theme_bw()
+
+p2.a <- p2+labs(y="")
+plot_grid(p1,p2.a,align = "h", labels = "AUTO")
+
+# pdf("Figures/Draft_finalfigures/FigsSX.pdf", width = 10, height = 6)
+# plot_grid(p1,p2.a,align = "h", labels = "AUTO")
+# dev.off()
+
+
+```
+
+```{r supplementalfig.X_fittoeachpatch}
+
+newdat6 <- expand.grid(Distance = seq(0,20,length.out = 130), tnuminpatch.f = c(1:3), pred.den = aw.norm.second$pred.den[aw.norm.second$pnum.f != 20 & aw.norm.second$pnum.f != 21 & aw.norm.second$pnum.f != 22])
+
+newdat6$pnum.f = rep(c(1:7,10:12,17:19), each = 390)
+newdat6$comp1 <- rep(mergefile$comp1, each = 390)
+newdat6$sub = ifelse(newdat6$pnum.f < 11, "Seagrass", "Macroalgea")
+newdat6$location = ifelse(newdat6$pnum.f < 11, "Belize", "Florida")
+
+newdat6$pnum.f <- as.factor(newdat6$pnum.f)
+newdat6$sub <- as.factor(newdat6$sub)
+newdat6$tnuminpatch.f <- as.factor(newdat6$tnuminpatch.f)
+
+newdat6$predict.beta2 <- predict(beta2, newdat6)
+newdat6$predict.bino1 <- predict(bino1, newdat6)
+newdat6$pred.unconditional <- newdat6$predict.beta2 * newdat6$predict.bino1
+
+newdat6$pnum.f.reordered <- reorder(newdat6$pnum.f, -newdat6$pred.den)
+df$pnum.f.reordered <- reorder(df$pnum.f, -df$pred.den)
+newdat6$labelz <- reorder(as.factor(paste(newdat6$location, newdat6$pnum.f)), -newdat6$pred.den) 
+df$labelz <- reorder(as.factor(paste(df$location, df$pnum.f.)), -df$pred.den) 
+
+
+ggplot(newdat6, aes(x=Distance, y = pred.unconditional, group = labelz))+
+  geom_line(data = newdat6, aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
+  geom_point(data = df, aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
+  facet_wrap(~ labelz)
+
+fl <- ggplot(newdat6[newdat6$location == "Florida", ], aes(x=Distance, y = pred.unconditional, group = labelz))+
+  geom_line(data = newdat6[newdat6$location == "Florida", ], aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
+  geom_point(data = df[df$location == "Florida", ], aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
+  facet_wrap(~ labelz)
+
+bz <- ggplot(newdat6[newdat6$location == "Belize", ], aes(x=Distance, y = pred.unconditional, group = labelz))+
+  geom_line(data = newdat6[newdat6$location == "Belize", ], aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
+  geom_point(data = df[df$location == "Belize", ], aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
+  facet_wrap(~ labelz)
+
+pa <- fl + labs(x = "")
+
+plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+
+# pdf("Figures/Draft_finalfigures/FigsS4.pdf", width = 8, height = 12)
+# plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+# dev.off()
+
+jpeg("Figures/Draft_finalfigures/FigsS4_redue.jpg", width = 8, height = 12, units = "in", res = 300)
+plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+dev.off()
+
+```
+
+```{r sup_groundtruth}
+setwd("~/Dropbox/Thesis_Research/DataforAnalysis/supfig")
+
+class <- read.table("classifications.csv", sep = ",", header = T)
+meta <- read.table("metadata.csv", sep = ",", header = T)
+
+dat <- left_join(class, meta)
+dat <- select(dat, -Date)
+
+sum <- dat %>% group_by(Distance, Transect, Label) %>%
+  summarize(count = length(Label)) %>%
+  spread(Label, count, fill = 0) %>%
+  mutate(per.resource = (Macro + SGSP) / (100-Other), per.sand = Sand/(100-Other) )
+
+
+#######################################################################
+## Add to master code file with grazing data...
+#######################################################################
+
+graze <- df[df$pnum.f == 1, c("ratio.stancor", "Distance", "tnuminpatch.f")]
+
+dat2 <- read.csv("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/satellite.csv")
+
+
+halo <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/haloestimates.csv", sep = ",", header = T)
+
+
+lines <- readOGR("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/supfig/lines.shp")
+
+
+sat <- raster("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/supfig/raster.tif")
+
+#lines <- spTransform(lines, proj4string(sat))
+
+brightness <- extract(sat, lines)
+
+bright <- data.frame(t80 = brightness[[1]][1:23], t180 = brightness[[2]][1:23], t220 = brightness[[3]][1:23])
+bright$distance <- seq(0, by = 2, length.out = length(bright$t80))
+
+bright <- bright %>% gather(transect, brightness, -distance)
+
+
+
+#png("Figures/groundtruth.png", width = 900, height = 600)
+ggplot(sum[sum$Distance <=30, ], aes(y = per.resource*100, x = Distance))+
+  geom_rect(aes(xmin=min(halo$extent[halo$pnum == 1]), xmax=max(halo$extent[halo$pnum == 1]), ymin=0, ymax=Inf), fill = "gray70", alpha = 0.8)+
+  geom_vline(xintercept = mean(halo$extent[halo$pnum == 1]), color = "white", lwd = 1.5)+
+  stat_summary(fun.data = "mean_se", geom = "line", color = "#99d594", lwd = 2)+
+  stat_summary(data = graze, aes(y = ratio.stancor*100, x = Distance), fun.data = "mean_se", geom = "bar")+
+  stat_summary(data = graze, aes(y = ratio.stancor*100, x = Distance), fun.data = "mean_se", geom = "errorbar", color = "gray30", width = 0.5) +
+  stat_summary(data = bright[bright$distance <=30, ], aes(x=distance, y=rescale(brightness)*100), geom = "line", color = "#fc8d59", lty = 4, lwd = 2) +
+  scale_y_continuous(sec.axis = sec_axis(~.*0.01, name = "Relative reflectance"))+
+  labs(y = "Resource density (% cover) \n Amount grazed (%)", x = "Distance from reef edge (m)")+
+  theme(text = element_text(size=22), axis.text = element_text(size = 18))
+
+
+#dev.off()
+
+
+#################################################
+## Stats for paper
+#################################################
+
+# Merge into 1 data.frame
+
+graze$transect <- ifelse(graze$tnuminpatch.f == 1, "t80", 
+                         ifelse(graze$tnuminpatch.f == 2, "t180", "t220"))
+
+sum<- sum %>% rename(incor.transect = Transect)
+sum$transect <- ifelse(sum$incor.transect == 80, "t80", 
+                         ifelse(sum$incor.transect == 120, "t180", "t220"))
+
+names(bright) <- c("Distance", "transect", "brightness")
+
+wk <- left_join(graze, sum)
+wk <- left_join(wk, bright)
+
+temp <- wk %>% group_by(Distance) %>%
+  summarize(per.resource = mean(per.resource, na.rm = T), ratio.stancor = mean(ratio.stancor), brightness = mean(brightness))
+
+lm.ground <- lm(per.resource ~ ratio.stancor, data = temp)
+summary(lm.ground)
+
+lm.ground2 <- lm(per.resource ~ brightness, data = temp)
+summary(lm.ground2)
+plot(per.resource ~ ratio.stancor, data = wk)
+
+wk2 <- left_join(bright, sum)
+lm.ground2 <- lm(brightness ~ per.resource, data = wk2)
+plot(per.resource ~ brightness, data = wk2)
+summary(lm.ground2)
+
+lm.ground3 <- lm(per.resource ~ Distance, data = wk2)
+summary(lm.ground3)
+
+lm.ground4 <- lm(ratio.stancor ~ Distance, data = wk)
+summary(lm.ground4)
+```
+
+```{r TableS3_table}
+
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(sjstats)
+
+labels <- c(`scale(Distance)` = "Distance", `scale(comp1)` = "PCA 1", `scale(pred.den)` = "Predator abundance",`scale(Distance):scale(comp1)` = "Distance: PCA 1", `scale(Distance):scale(pred.den)` = "Distance: Predator density")
+
+tab_model(beta2, bino1, show.std = TRUE, show.se = TRUE, transform = NULL, show.intercept = F, show.ci = F, dv.labels = c("Grazing Intensity", "Grazing Incidence"),  pred.labels = labels, show.icc = F, show.r2 = F, file = "/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/table2.html")
+
+```
+
+```{r parrots}
+
+###########################################
+## Parrot fish only analysis
+###########################################
+
+p.beta.rich <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(pred.den) * scale(parrot.den) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = "beta_family")
+summary(p.beta.rich)
+
+p.beta <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(parrot.den) + scale(pred.den) + (1|sub/pnum.f/tnuminpatch.f), data = df[df$ratio.stancor > 0, ], family = "beta_family")
+summary(p.beta)
+
+p.bino <- glmmTMB(bitten ~ scale(Distance) * scale(parrot.den) + scale(pred.den) + (1|sub/pnum.f/tnuminpatch.f), data = df, family = binomial)
+summary(p.bino)
+
+# Make coef plot
+
+model1Frame <- data.frame(Variable = rownames(summary(p.beta)$coefficients$cond),
+                          Coefficient = summary(p.beta)$coefficients$cond[, 1],
+                          SE = summary(p.beta)$coefficients$cond[, 2],
+                          Model = "Grazing\nintensity", 
+                          pvalue = summary(p.beta)$coefficients$cond[, 4])
+model2Frame <- data.frame(Variable = rownames(summary(p.bino)$coefficients$cond),
+                          Coefficient = summary(p.bino)$coefficients$cond[, 1],
+                          SE = summary(p.bino)$coefficients$cond[, 2],
+                          pvalue = summary(p.bino)$coefficients$cond[, 4],
+                          Model = "Grazing\nincidence")
+
+# Combine these data.frames
+allModelFrame <- data.frame(rbind(model1Frame, model2Frame))  # etc.
+row.names(allModelFrame) <- NULL
+allModelFrame$sig <- ifelse(allModelFrame$pvalue < 0.05, "black", "white")
+
+
+allModelFrame$vnames <- as.factor(c("intercept", "Distance", "Parrotfish density", "Predator density", "Distance x\nParrotfish density", "intercept", "Distance", "Parrotfish density", "Predator density", "Distance x\nParrotfish density"))
+
+modeframe.forgg <- allModelFrame[allModelFrame$vnames != "intercept", ]
+
+modeframe.forgg$vnames <- factor(modeframe.forgg$vnames, levels(modeframe.forgg$vnames)[c(3,2,4,5,1)]) 
+
+
+# Plot
+parrot.coef <- ggplot(modeframe.forgg)+
+  coord_flip() + 
+  geom_hline(yintercept = 0, colour = gray(1/2), lty = 2)+
+  geom_linerange(aes(x = vnames, ymin = Coefficient - SE, ymax = Coefficient + SE, color = Model), lwd = 1, position = position_dodge(width = 1/2))+
+  geom_point(aes(x = vnames, y = Coefficient, color = Model, fill = sig), size = 3, lwd = 1, position = position_dodge(width = 0.5), shape = 21)+
+  scale_fill_manual(values = c("black","white"), guide = guide_legend(title = "Significant at \np < 0.05"))+
+  theme_bw()+
+  theme(axis.title.y = element_blank(), axis.text = element_text(size = 12), axis.title = element_text(size = 14))
+print(parrot.coef)  # The trick to these is position_dodge().
+
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/FigS4_MEPS_withlegend.svg", width = 7, height = 6)
+# parrot.coef
+# dev.off()
+# 
+# svg("~/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/FigS4_MEPS.svg", width = 7, height = 6)
+# parrot.coef + theme(legend.position="none")
+# dev.off()
+
+
+# As table
+
+labels <- c(`scale(Distance)` = "Distance", `scale(parrot.den)` = "Parrotfish density", `scale(pred.den)` = "Predator abundance",`scale(Distance):scale(parrot.den)` = "Distance: Parrotfish density")
+
+tab_model(p.beta, p.bino, show.std = TRUE, show.se = TRUE, transform = NULL, show.intercept = F, show.ci = F, dv.labels = c("Grazing Intensity", "Grazing Incidence"),  pred.labels = labels, show.icc = F, show.r2 = F, file = "/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/table_parrot.html")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
