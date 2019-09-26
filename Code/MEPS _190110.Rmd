@@ -597,7 +597,7 @@ total.area <- sum(ls$halo.area)/10^6
 
 bzdist <- read.table("~/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/out_distance.csv", sep = ",", header=T)
 
-bzgeom <- read.table("~/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/geometries.csv", sep = ",", header=T)
+bzgeom <- read.table("~/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/geometries_bz.csv", sep = ",", header=T)
 
 dist <- aggregate(bzdist$Distance, by = list(bzdist$InputID), FUN = mean)
 names(dist) <- c("id", "extent")
@@ -1017,8 +1017,8 @@ newdat6$pnum.f <- as.factor(newdat6$pnum.f)
 newdat6$sub <- as.factor(newdat6$sub)
 newdat6$tnuminpatch.f <- as.factor(newdat6$tnuminpatch.f)
 
-newdat6$predict.beta2 <- predict(beta2, newdat6)
-newdat6$predict.bino1 <- predict(bino1, newdat6)
+newdat6$predict.beta2 <- predict(beta2, newdat6, type = "response")
+newdat6$predict.bino1 <- predict(bino1, newdat6, type = "response")
 newdat6$pred.unconditional <- newdat6$predict.beta2 * newdat6$predict.bino1
 
 newdat6$pnum.f.reordered <- reorder(newdat6$pnum.f, -newdat6$pred.den)
@@ -1036,39 +1036,37 @@ ggplot(newdat6, aes(x=Distance, y = pred.unconditional, group = labelz))+
 fl <- ggplot(newdat6[newdat6$location == "Florida", ], aes(x=Distance, y = pred.unconditional, group = labelz))+
   geom_line(data = newdat6[newdat6$location == "Florida", ], aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
   geom_point(data = df[df$location == "Florida", ], aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  geom_vline(data = df[df$location == "Florida", ], aes(xintercept = pextent), lty = 4) +
   labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
   facet_wrap(~ labelz)
 
 bz <- ggplot(newdat6[newdat6$location == "Belize", ], aes(x=Distance, y = pred.unconditional, group = labelz))+
   geom_line(data = newdat6[newdat6$location == "Belize", ], aes(x = Distance, y = pred.unconditional, group = tnuminpatch.f))+
   geom_point(data = df[df$location == "Belize", ], aes(x = jitter(Distance), y = ratio.stancor), shape = 1)+
+  geom_vline(data = df[df$location == "Belize", ], aes(xintercept = pextent), lty = 4) +
   labs(y = "Proportion Grazed", x = "Distance from reef edge (m)")+
-  facet_wrap(~ labelz)
+  facet_wrap(~ labelz, scales = "free_x")
 
 pa <- fl + labs(x = "")
 
-plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+cowplot::plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
 
 # pdf("Figures/Draft_finalfigures/FigsS4.pdf", width = 8, height = 12)
 # plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
 # dev.off()
 
-jpeg("Figures/Draft_finalfigures/FigsS4_redue.jpg", width = 8, height = 12, units = "in", res = 300)
-plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
-dev.off()
+# jpeg("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/FigsS4_redue.jpg", width = 8, height = 12, units = "in", res = 300)
+# cowplot::plot_grid(pa, bz, align = "v", nrow = 2, labels = "AUTO")
+# dev.off()
 
 ```
 
 ```{r sup_groundtruth}
-setwd("~/Dropbox/Thesis_Research/DataforAnalysis/supfig")
 
-class <- read.table("classifications.csv", sep = ",", header = T)
-meta <- read.table("metadata.csv", sep = ",", header = T)
+dat <- read.table("supfig/annotations.csv", sep = ",", header = T)
 
-dat <- left_join(class, meta)
-dat <- select(dat, -Date)
 
-sum <- dat %>% group_by(Distance, Transect, Label) %>%
+sum <- dat %>% group_by(Patch, Distance, Transect, Label) %>%
   summarize(count = length(Label)) %>%
   spread(Label, count, fill = 0) %>%
   mutate(per.resource = (Macro + SGSP) / (100-Other), per.sand = Sand/(100-Other) )
@@ -1077,10 +1075,16 @@ sum <- dat %>% group_by(Distance, Transect, Label) %>%
 #######################################################################
 ## Add to master code file with grazing data...
 #######################################################################
+library(rgeos)
+library(rgdal)
+library(maptools)
+library(raster)
+library(sp)
 
-graze <- df[df$pnum.f == 1, c("ratio.stancor", "Distance", "tnuminpatch.f")]
 
-dat2 <- read.csv("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/satellite.csv")
+graze <- df[df$pnum.f == 1 | df$pnum.f == 2 | df$pnum.f == 7 | df$pnum.f == 10, c("ratio.stancor", "Distance", "tnuminpatch.f", "pnum.f")]
+
+#dat2 <- read.csv("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/satellite.csv")
 
 
 halo <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/RawFiles/haloestimates.csv", sep = ",", header = T)
@@ -1089,17 +1093,19 @@ halo <- read.table("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/R
 lines <- readOGR("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/supfig/lines.shp")
 
 
-sat <- raster("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/supfig/raster.tif")
+sat <- raster("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/supfig/geo_glintcorrected2.tif")
 
 #lines <- spTransform(lines, proj4string(sat))
 
-brightness <- extract(sat, lines)
+brightness <- extract(sat, lines, layer = 2, along = T)
+names(brightness) <- lines$id
 
-bright <- data.frame(t80 = brightness[[1]][1:23], t180 = brightness[[2]][1:23], t220 = brightness[[3]][1:23])
+bright <- data.frame(t80 = brightness[[1]][1:22], t180 = brightness[[2]][1:22], t220 = brightness[[3]][1:22], t320 = brightness[[4]][1:22], t50 = brightness[[5]][1:22], t200 = brightness[[6]][1:22])
+
 bright$distance <- seq(0, by = 2, length.out = length(bright$t80))
 
 bright <- bright %>% gather(transect, brightness, -distance)
-
+bright$patch = rep(c(1,1,1,2,7,10), each = 22)
 
 
 #png("Figures/groundtruth.png", width = 900, height = 600)
@@ -1109,7 +1115,7 @@ ggplot(sum[sum$Distance <=30, ], aes(y = per.resource*100, x = Distance))+
   stat_summary(fun.data = "mean_se", geom = "line", color = "#99d594", lwd = 2)+
   stat_summary(data = graze, aes(y = ratio.stancor*100, x = Distance), fun.data = "mean_se", geom = "bar")+
   stat_summary(data = graze, aes(y = ratio.stancor*100, x = Distance), fun.data = "mean_se", geom = "errorbar", color = "gray30", width = 0.5) +
-  stat_summary(data = bright[bright$distance <=30, ], aes(x=distance, y=rescale(brightness)*100), geom = "line", color = "#fc8d59", lty = 4, lwd = 2) +
+  stat_summary(data = bright[bright$distance <=30 & bright$patch == 1, ], aes(x=distance, y=rescale(brightness)*100), geom = "line", color = "#fc8d59", lty = 4, lwd = 2) +
   scale_y_continuous(sec.axis = sec_axis(~.*0.01, name = "Relative reflectance"))+
   labs(y = "Resource density (% cover) \n Amount grazed (%)", x = "Distance from reef edge (m)")+
   theme(text = element_text(size=22), axis.text = element_text(size = 18))
@@ -1124,8 +1130,7 @@ ggplot(sum[sum$Distance <=30, ], aes(y = per.resource*100, x = Distance))+
 
 # Merge into 1 data.frame
 
-graze$transect <- ifelse(graze$tnuminpatch.f == 1, "t80", 
-                         ifelse(graze$tnuminpatch.f == 2, "t180", "t220"))
+graze$transect <- ifelse(graze$pnum.f == 1 & graze$tnuminpatch.f == 1, "t80", ifelse(graze$pnum.f == 1 & graze$tnuminpatch.f == 2, "t180", "t220"))
 
 sum<- sum %>% rename(incor.transect = Transect)
 sum$transect <- ifelse(sum$incor.transect == 80, "t80", 
@@ -1156,6 +1161,54 @@ summary(lm.ground3)
 
 lm.ground4 <- lm(ratio.stancor ~ Distance, data = wk)
 summary(lm.ground4)
+
+############################
+## attempt 2
+############################
+
+g <- graze %>% group_by(pnum.f, Distance) %>%
+  summarize(grazing = mean(ratio.stancor))
+names(g) <- c("patch", "distance", "grazing")
+
+b <- bright %>% group_by(patch, distance) %>%
+  summarize(brightness = mean(brightness))
+b$patch <- as.factor(b$patch)
+
+s <- sum %>% group_by(Patch, Distance) %>%
+  summarize(resource = mean(per.resource)) %>%
+  filter(Patch != 11)
+names(s) <- c("patch", "distance", "resource")
+s$patch <- as.factor(s$patch)
+
+wk <- left_join(b, s)
+wk <- left_join(wk,g)
+
+lm1 <- lm(grazing ~ distance, data = wk)
+summary(lm1)
+
+lm2 <- lm(resource ~ distance, data = wk)
+summary(lm2)
+
+lm3 <- lm(brightness ~ distance, data = wk)
+summary(lm3)
+
+
+
+wk %>% gather(variable, value, -c(patch, distance)) %>%
+  drop_na() %>%
+  ggplot(aes(x = distance, y = value))+
+    geom_point()+
+    geom_smooth()+
+    facet_wrap(~variable, scales = "free")
+
+#jpeg("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/bivariate_groundtruth.jpg", width = 8, height = 3, units = "in", res = 300)
+d <- par(mfrow = c(1,3), mar = c(4.5,4.5,1,1), cex.lab = 1.5, cex.axis = 1.3, las = 1)
+plot(grazing ~ distance, data = wk, pch = 20, cex = 1.2, xlim = c(0,20), ylab = "Amount grazed (%)", xlab = "Distance from reef edge (m)")
+plot(resource ~ distance, data = wk, pch = 20, cex = 1.2, xlim = c(0,35), ylab = "Resource cover (%)", xlab = "Distance from reef edge (m)")
+plot(brightness ~ distance, data = wk, pch = 20, cex = 1.2, ylab = "Satellite reflectance", xlab = "Distance from reef edge (m)")
+par(d)
+#dev.off()
+
 ```
 
 ```{r TableS3_table}
@@ -1237,6 +1290,344 @@ print(parrot.coef)  # The trick to these is position_dodge().
 labels <- c(`scale(Distance)` = "Distance", `scale(parrot.den)` = "Parrotfish density", `scale(pred.den)` = "Predator abundance",`scale(Distance):scale(parrot.den)` = "Distance: Parrotfish density")
 
 tab_model(p.beta, p.bino, show.std = TRUE, show.se = TRUE, transform = NULL, show.intercept = F, show.ci = F, dv.labels = c("Grazing Intensity", "Grazing Incidence"),  pred.labels = labels, show.icc = F, show.r2 = F, file = "/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/table_parrot.html")
+
+```
+
+```{r mpa_analysis}
+
+####################################################################
+## MPA Analysis for revise and resubmit
+####################################################################
+
+# Add in MPA variable
+
+mp <- df %>% mutate(protection = if_else(UniquePatch.num == 1 | UniquePatch.num == 2 | UniquePatch.num == 11 | UniquePatch.num == 12, "MPA", "Fished"))
+
+mp.beta.rich <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(pred.den) * scale(comp1) + protection + (1|sub/pnum.f/tnuminpatch.f), data = mp[mp$ratio.stancor > 0, ], family = "beta_family")
+summary(mp.beta.rich)
+modelassump(beta.rich)
+
+mp.beta1 <- glmmTMB(ratio.stancor ~ scale(Distance) * (scale(pred.den) + scale(comp1)) + protection + (1|sub/pnum.f/tnuminpatch.f), data = mp[mp$ratio.stancor > 0, ], family = "beta_family")
+summary(mp.beta1)
+modelassump(beta.rich)
+
+mp.beta2 <- glmmTMB(ratio.stancor ~ scale(Distance) * scale(comp1) + scale(pred.den) + protection + (1|sub/pnum.f/tnuminpatch.f), data = mp[mp$ratio.stancor > 0, ], family = "beta_family")
+summary(mp.beta2)
+modelassump(mp.beta2)
+
+mp.bino.rich <-  glmmTMB(bitten ~ scale(Distance) * scale(pred.den) * scale(comp1) + protection + (1|sub/pnum.f/tnuminpatch.f), data = mp, family = binomial)
+summary(mp.bino.rich)
+modelassump((bino.rich))
+
+mp.bino1 <-  glmmTMB(bitten ~ scale(Distance) * (scale(pred.den) + scale(comp1)) + protection + (1|sub/pnum.f/tnuminpatch.f), data = mp, family = binomial)
+summary(mp.bino1)
+modelassump(mp.bino1)
+
+###################################
+## Build table with results
+###################################
+
+labels <- c(`scale(Distance)` = "Distance", `scale(comp1)` = "PCA 1", `scale(pred.den)` = "Predator abundance", `protectionMPA` = "MPA effect", `scale(Distance):scale(comp1)` = "Distance: PCA 1", `scale(Distance):scale(pred.den)` = "Distance: Predator density")
+
+tab_model(mp.beta2, mp.bino1, show.std = TRUE, show.se = TRUE, transform = NULL, show.intercept = T, show.ci = F, dv.labels = c("Grazing Intensity", "Grazing Incidence"),  pred.labels = labels, show.icc = F, show.r2 = F, file = "/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/table_MPAeffects.html")
+```
+
+```{r normalized_distance}
+###########################################################
+## Normalized distance analysis
+###########################################################
+
+# Reviewer 3 had the idea to "normalize" distance relative to the halo boundary. I.e. how far are you from the halo boundary. 
+
+# First, I'll calculate the % distance, where 0% represents at the reef edge, and 100% represents the halo boundary (values >100% are outside the halo boundary)
+
+di <- df %>% mutate(norm.dist = ((Distance + pextent)/pextent)-1)
+
+di.beta1 <- glmmTMB(ratio.stancor ~ scale(norm.dist) * (scale(pred.den) + scale(comp1)) + (1|sub/pnum.f/tnuminpatch.f), data = di[di$ratio.stancor > 0, ], family = "beta_family")
+summary(di.beta1)
+modelassump(beta.rich)
+
+di.bino1 <-  glmmTMB(bitten ~ scale(norm.dist) * (scale(pred.den) + scale(comp1)) + (1|sub/pnum.f/tnuminpatch.f), data = di, family = binomial)
+summary(di.bino1)
+modelassump(di.bino1)
+
+# The results are qualitatively similar, so I don't think its worth pursuing further.
+```
+
+```{r MoransI}
+
+library(rgeos)
+library(rgdal)
+library(maptools)
+library(raster)
+library(sp)
+library(ape)
+library(gstat)
+library(ncf)
+
+####################################################
+## Local-scale spatial autocorrelation
+####################################################
+points <- read.csv("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Rawfiles/points.csv")
+patches <- points[1:8,]
+latlon <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+coordinates(patches) <- ~Lon+Lat
+proj4string(patches) <- latlon
+names(patches) <- "pnum"
+
+
+fk <- read.table("../RawFiles/fk_points.csv", sep = ",", header = T)
+coordinates(fk) <- ~X+Y
+proj4string(fk) <- latlon
+
+sites <- raster::bind(patches, fk )
+site <- merge(sites, aw.norm.second, by.x = "pnum", by.y = "pnum.f")
+
+
+# plot correlation x distance within each region for each site
+
+#Florida
+site.fk <- site[site$location == "Florida", ]
+
+site.fk <- spTransform(site.fk, CRS("+proj=utm +zone=17 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))
+
+fit1 <- correlog(x = site.fk@coords[,1], y = site.fk@coords[,2], z = site.fk$comp1, latlon = T, increment = 100)
+plot(fit1) # no evidence for sauto in comp1 in florida
+
+fit2 <- correlog(x = site.fk@coords[,1], y = site.fk@coords[,2], z = site.fk$pred.den, latlon = T, increment = 100)
+plot(fit2) # no evidence for sauto in pred.den in florida
+
+dists <- as.matrix(dist(cbind(site.fk@coords[,1], site.fk@coords[,2])))
+dists.inv <- 1/dists
+diag(dists.inv) <- 0
+ape::Moran.I(site.fk$pred.den, dists.inv)
+ape::Moran.I(site.fk$comp1, dists.inv)
+
+
+# Belize
+site.bz <- site[site$location == "Belize", ]
+
+site.bz <- spTransform(site.bz, CRS("+proj=utm +zone=16 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))
+
+fit1 <- correlog(x = site.bz@coords[,1], y = site.bz@coords[,2], z = site.bz$comp1, latlon = T, increment = 100)
+plot(fit1) # no evidence for sauto in comp1 in belize
+
+fit2 <- correlog(x = site.bz@coords[,1], y = site.bz@coords[,2], z = site.bz$pred.den, latlon = T, increment = 100)
+plot(fit2) # no evidence for sauto in pred.den in belize
+
+dists <- as.matrix(dist(cbind(site.bz@coords[,1], site.bz@coords[,2])))
+dists.inv <- 1/dists
+diag(dists.inv) <- 0
+ape::Moran.I(site.bz$pred.den, dists.inv)
+ape::Moran.I(site.bz$comp1, dists.inv)
+
+
+#################################################
+## Landscape-scale spatial autocorrelation
+#################################################
+latlon <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+
+#Bring in the spatial data for florida
+
+sp <- readOGR("../halo_analysis/patches_rpj.shp")
+sp <- spTransform(sp, latlon)
+
+sp <- sp[!is.na(as.numeric(as.character(sp$Name))), ] #select only the patches
+cents <- gCentroid(sp, byid = T)
+
+sp$x <- as.data.frame(cents@coords)$x
+sp$y <- as.data.frame(cents@coords)$y
+
+sp$id <- paste(sp$ID, "b", sep = "")
+sp <- sp[, c("id", "x","y")]
+
+
+sp$id[!sp$id %in% all$id]
+sp <- sp[sp$id != "Band_5.kml19b", ]
+sp@data <- merge(all,sp, by = "id")
+
+
+
+#Bring in the spatial data for belize
+bz.sp <- readOGR("../belize_stuffs/patchesandhalos.shp")
+bz.sp <- spTransform(bz.sp, latlon)
+
+bz.sp <- bz.sp[bz.sp$p_or_h == "p", ]
+bz.sp <- bz.sp[, c("id")]
+cents.bz <- gCentroid(bz.sp, byid = T)
+
+bz.sp$x <- cents.bz@coords[,1]
+bz.sp$y <- cents.bz@coords[,2]
+
+bz.sp$id <- paste("bz", bz.sp$id, sep = "_")
+bz.sp@data <- merge(all, bz.sp, by = "id")
+
+
+#Bring in the field sites
+site$x <- site@coords[,1]
+site$y <- site@coords[,2]
+
+site$id <- paste("field", site$pnum, sep = "_")
+mine <- site[,c("id", "x", "y")]
+mine@data <- merge(all, mine, by = "id")
+mine <- mine[,c("id", "area", "perimeter", "extent", "location", "x", "y")]
+
+#combine the datasets 
+
+sp <- rbind(sp, bz.sp, makeUniqueIDs = TRUE) 
+
+# Make a spatial points data frame with the centroids
+centers <- with(sp@data, data.frame(x = x, y = y, lon = x, lat = y, extent = extent, area = area, location = location, id = id))
+centers <- rbind(centers, with(mine@data, data.frame(x=x,y=y,lon =x, lat=y, extent = extent, area = area, location = location, id = id)))
+coordinates(centers) <- ~x+y
+
+proj4string(centers) <- latlon
+
+
+#############################################################
+## Build the model and correct for spatial autocorrelation
+#############################################################
+library(nlme)
+model <- nlme::gls(log(extent) ~ log(area)*location, data = centers@data)
+null <- nlme::gls(log(extent) ~ 1, data = centers@data)
+model.lm <- lm(log(extent) ~ log(area)*location, data = centers@data)
+
+# with nlme
+
+var.form <- nlme::Variogram(model, form = ~ lon + lat | location, resType = "normalized", nint = 100)
+plot(var.form) # this suggests that there is spatial autocorrelation in the residuals
+
+exponential.autocor <- gls( log(extent) ~ log(area) * location , correlation = corExp(form = ~lon + lat | location, nugget=T), data = centers@data, method = "ML" )
+
+gaussian.autocor <- gls( log(extent) ~ log(area)* location , correlation = corGaus(form = ~lon + lat | location, nugget=T), data = centers@data, method = "ML"  )
+
+spherical.autocor <- gls( log(extent) ~ log(area)* location , correlation = corSpher(form = ~lon + lat | location, nugget=T), data = centers@data, method = "ML"  )
+
+linear.autocor <- gls( log(extent) ~ log(area)* location , correlation = corLin(form = ~lon + lat | location, nugget=T), data = centers@data, method = "ML"  )
+
+ratio.autocor <- gls( log(extent) ~ log(area)* location , correlation = corRatio(form = ~lon + lat | location, nugget=T), data = centers@data, method = "ML"  )
+
+MuMIn::model.sel(model, exponential.autocor, gaussian.autocor, spherical.autocor, ratio.autocor)
+
+var.form <- Variogram(exponential.autocor, form = ~ lon + lat | location, resType = "normalized", nint = 100)
+summary(exponential.autocor)
+plot(var.form)
+
+MuMIn::r.squaredLR(exponential.autocor, model)
+MuMIn::r.squaredLR(exponential.autocor, null)
+sink("~/Dropbox/Thesis_Research/DataforAnalysis/exponential_autocor.txt")
+print(summary(exponential.autocor))
+print(MuMIn::r.squaredLR(exponential.autocor, model))
+sink()
+
+
+
+# Make it so I can get cofidence intervals
+centers$log.area <- log(centers$area, base = 10)
+centers$log.extent <- log(centers$extent, base = 10)
+
+exponential.autocor.forplot <- gls( log.extent ~ log.area, correlation = corExp(form = ~lon + lat | location, nugget=T), data = centers@data )
+summary(exponential.autocor.forplot)
+
+newdata = expand.grid(log.area = log(seq(min(centers$area), max(centers$area), length.out = 2000), base = 10))
+newdata$predicted <- as.data.frame(AICcmodavg::predictSE(exponential.autocor.forplot, newdata = newdata))[,1]
+newdata$se.fit <- as.data.frame(AICcmodavg::predictSE(exponential.autocor.forplot, newdata = newdata))[,2]
+newdata$predict.simple <- predict(exponential.autocor.forplot, newdata = newdata)
+
+
+plot(log(extent) ~ log(area), data = centers@data)
+points(log(centers$area), centers$predicted)
+
+plot(log(extent, base = 10) ~ log(area, base = 10), data = centers@data)
+lines(newdata$log.area, newdata$predicted)
+
+##############################################################
+## Plot it
+##############################################################
+
+revised <- ggplot()+
+  geom_point(data = all, aes(x = area, y = extent, shape = location), color = "gray70")+
+  scale_shape_manual(values=c(24,21), name = "")+
+  scale_color_manual(values = c("black","gray50"), name = "")+
+  geom_ribbon(data = newdata, aes(x = 10^log.area, ymin = 10^predicted + 10^se.fit, ymax = 10^predicted - 10^se.fit), fill = "gray60", alpha = .5) +
+  geom_line(data = newdata , aes(x = 10^log.area, y = 10^predicted), lwd = 1)+
+  geom_point(data = forplot, aes(x = area, y = extent, shape = location), color = "black", fill = scales::alpha("white", 0.8), size = 2, stroke = 1)+
+  scale_x_log10(name = expression("Patch reef area ("~m^{2}~")"), breaks = c(0, 1, 10, 100, 1000, 10000))+
+  scale_y_log10(name = "Halo Width (m)", breaks = c(0, 0.5, 1, 5, 10, 20, 40, 75))+
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())+
+  theme(legend.justification=c(0,1), legend.position=c(0.05,0.95), legend.key.width = unit(1, "inches"))+
+  theme(axis.text=element_text(size=12), axis.title=element_text(size=14))
+
+
+fig3 <- plot_grid(fg3,revised,align = "h")
+fig3
+
+png("/Users/bartdifiore/Dropbox/Thesis_Research/DataforAnalysis/Figures/Draft_finalfigures/Fig3_Sauto.png", width = 13, height = 6.5, units = "in", res = 300)
+fig3
+dev.off()
+
+
+
+
+################################################################
+## This didn't work out that well yet cause of model complexity
+################################################################
+
+# estimate patterns in autocorrelation in model residuals
+
+formerge <- data.frame(lon = site@coords[, 1], lat = site@coords[,2], site@data)
+
+sp.aut <- merge(df, formerge[, 1:3], by.x = "pnum.f", by.y = "pnum")
+
+
+DHARMa::testSpatialAutocorrelation(beta2)
+
+res <- simulateResiduals(beta2)
+res2 <- recalculateResiduals(res, group = sp.aut$pnum.f[sp.aut$ratio.stancor > 0])
+
+testSpatialAutocorrelation(res2, x = site@coords[,1], y = site@coords[,2])
+
+
+bino1 <-  glmer(bitten ~ scale(Distance) * (scale(pred.den) + scale(comp1)) + (1|pnum.f/tnuminpatch.f), data = df, family = binomial, control=glmerControl(optCtrl=list(maxfun=10^6)))
+summary(bino1)
+modelassump((bino1))
+
+res <- simulateResiduals(bino1)
+res2 <- recalculateResiduals(res, group = df$pnum.f)
+
+testSpatialAutocorrelation(res2, x = site@coords[,1], y = site@coords[,2])
+
+
+
+
+
+
+
+
+
+sim_nbz = simulate(beta2, nsim = 1000)
+sim_nbz = do.call(cbind, sim_nbz)
+head(sim_nbz)
+sim_res_nbz = createDHARMa(simulatedResponse = sim_nbz, 
+                           observedResponse = df$ratio.stancor[df$ratio.stancor > 0],
+                           fittedPredictedResponse = predict(beta2))
+
+plotSimulatedResiduals(sim_res_nbz)
+
+
+
+
+sim_nbz = simulate(bino1, nsim = 1000)
+sim_nbz = do.call(cbind, sim_nbz)
+head(sim_nbz)
+sim_res_nbz = createDHARMa(simulatedResponse = sim_nbz, 
+                           observedResponse = df$ratio.stancor,
+                           fittedPredictedResponse = predict(bino1), 
+                           integerResponse = T)
+
+plotSimulatedResiduals(sim_res_nbz)
 
 ```
 
